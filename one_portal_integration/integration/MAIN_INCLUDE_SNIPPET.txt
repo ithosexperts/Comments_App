@@ -1,0 +1,25 @@
+ONE PORTAL BACKEND INSTALL
+==========================
+
+1. Copy:
+   one_portal_patch/app/routers/comments_launch.py
+   to:
+   ONEPORTAL/app/routers/comments_launch.py
+
+2. In ONEPORTAL/app/main.py, add this import alongside the existing router imports:
+   from app.routers import comments_launch
+
+3. Add this alongside the existing app.include_router(...) lines:
+   app.include_router(comments_launch.router)
+
+4. Keep the existing JWTValidationMiddleware enabled on /api/comments/launch-ticket.
+   The route identifies the user only from request.state.user; it does not trust the
+   caller to submit EmployeeCode, email, or name.
+
+5. If a form is hosted in a cross-origin iframe, copy
+   one_portal_patch/app/static/js/comments-launch-bridge.js to
+   ONEPORTAL/app/static/js/comments-launch-bridge.js, then include it in the
+   authenticated Portal page shell. Before that script is loaded, configure a strict
+   exact-origin allowlist, for example:
+   window.ONEPORTAL_COMMENTS_ALLOWED_ORIGINS = ["https://your-approved-fms-origin"];
+   Do not use '*' as an allowed origin.

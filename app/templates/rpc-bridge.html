@@ -1,0 +1,30 @@
+<script>
+// Compatibility bridge: existing UI can continue using google.script.run callbacks,
+// but every call is sent to the FastAPI backend at /api/rpc/<method>.
+(function () {
+  window.google = window.google || {};
+  const makeRunner = () => {
+    let successHandler = null;
+    let failureHandler = null;
+    const proxy = new Proxy({}, {
+      get(_target, prop) {
+        if (prop === 'withSuccessHandler') return fn => { successHandler = fn; return proxy; };
+        if (prop === 'withFailureHandler') return fn => { failureHandler = fn; return proxy; };
+        if (typeof prop !== 'string') return undefined;
+        return (...args) => fetch('/api/rpc/' + encodeURIComponent(prop), {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({args})
+        }).then(async response => {
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(body.detail || body.error || ('Request failed: ' + response.status));
+          return body;
+        }).then(result => { if (successHandler) successHandler(result); return result; })
+          .catch(error => { if (failureHandler) failureHandler(error); else console.error(error); });
+      }
+    });
+    return proxy;
+  };
+  if (!window.google.script) window.google.script = {};
+  Object.defineProperty(window.google.script, 'run', { configurable: true, get: makeRunner });
+})();
+</script>

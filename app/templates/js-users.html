@@ -1,0 +1,124 @@
+<script>
+function showRightPanelTab(tab) {
+  const showUsers = tab === 'users';
+  const activityPanel = document.getElementById('activity-panel');
+  const usersPanel = document.getElementById('users-panel');
+  const activityButton = document.getElementById('activity-tab-button');
+  const usersButton = document.getElementById('users-tab-button');
+  const refreshButton = document.getElementById('activity-refresh-button');
+  if (!activityPanel || !usersPanel) return;
+
+  activityPanel.classList.toggle('hidden', showUsers);
+  usersPanel.classList.toggle('hidden', !showUsers);
+  usersPanel.classList.toggle('flex', showUsers);
+  refreshButton?.classList.toggle('hidden', showUsers);
+
+  activityButton?.classList.toggle('border-blue-600', !showUsers);
+  activityButton?.classList.toggle('text-blue-700', !showUsers);
+  activityButton?.classList.toggle('border-transparent', showUsers);
+  activityButton?.classList.toggle('text-gray-500', showUsers);
+  activityButton?.setAttribute('aria-selected', String(!showUsers));
+  usersButton?.classList.toggle('border-blue-600', showUsers);
+  usersButton?.classList.toggle('text-blue-700', showUsers);
+  usersButton?.classList.toggle('border-transparent', !showUsers);
+  usersButton?.classList.toggle('text-gray-500', !showUsers);
+  usersButton?.setAttribute('aria-selected', String(showUsers));
+
+  if (showUsers) {
+    renderUsersDirectory();
+    loadUsersList().catch(() => {});
+  }
+}
+
+// Load the employee directory once and share the same names with @mentions.
+// A failed API call is shown in the User tab instead of silently looking empty.
+function loadUsersList(force = false) {
+  if (usersLoaded && !force) return Promise.resolve(usersList);
+  if (usersLoadPromise && !force) return usersLoadPromise;
+  if (!window.google || !google.script || !google.script.run) {
+    usersLoadError = 'Backend bridge is unavailable. Reload the page after the server starts.';
+    renderUsersDirectory();
+    return Promise.reject(new Error(usersLoadError));
+  }
+
+  usersLoadError = '';
+  usersLoadPromise = new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(users => {
+        // Backend supplies only Active=Y employees; enforce the same rule in
+        // the browser so inactive/malformed records never enter @mention choices.
+        usersList = (Array.isArray(users) ? users : []).filter(user =>
+          String(user && (user.active ?? user.Active) || '').trim().toUpperCase() === 'Y'
+        );
+        usersLoaded = true;
+        usersLoadError = '';
+        usersLoadPromise = null;
+        renderUsersDirectory();
+        resolve(usersList);
+      })
+      .withFailureHandler(error => {
+        usersList = [];
+        usersLoaded = false;
+        usersLoadError = String((error && error.message) || error || 'Employee API request failed');
+        usersLoadPromise = null;
+        renderUsersDirectory();
+        reject(error instanceof Error ? error : new Error(usersLoadError));
+      })
+      .getAllUsers();
+  });
+  return usersLoadPromise;
+}
+
+function renderUsersDirectory() {
+  const body = document.getElementById('users-table-body');
+  if (!body) return;
+  const searchEl = document.getElementById('users-search');
+  const query = (searchEl?.value || '').trim().toLowerCase();
+  const allUsers = Array.isArray(usersList) ? usersList : [];
+  const filtered = allUsers.filter(user => {
+    const name = String(user.name || '').toLowerCase();
+    const email = String(user.email || '').toLowerCase();
+    const rights = String(user.rights || user.role || 'User').toLowerCase();
+    const department = String(user.department || '').toLowerCase();
+    return !query || [name, email, rights, department].some(value => value.includes(query));
+  });
+
+  body.innerHTML = filtered.map(user => {
+    const rights = String(user.rights || user.role || 'User');
+    const isAdmin = rights.toLowerCase() === 'admin';
+    const badge = isAdmin
+      ? 'bg-blue-100 text-blue-800 border-blue-200'
+      : 'bg-gray-100 text-gray-700 border-gray-200';
+    return `<tr class="hover:bg-gray-50">
+      <td class="px-3 py-3 font-medium text-gray-800">${escapeHTML(user.name || '')}</td>
+      <td class="px-3 py-3 text-gray-600 break-all">${escapeHTML(user.email || '')}</td>
+      <td class="px-3 py-3"><span class="inline-flex px-2 py-1 border rounded-full text-xs font-semibold ${badge}">${escapeHTML(rights)}</span></td>
+    </tr>`;
+  }).join('');
+
+  const empty = document.getElementById('users-empty-state');
+  empty?.classList.toggle('hidden', filtered.length !== 0);
+  const count = document.getElementById('users-count');
+  if (count) count.textContent = `${filtered.length} of ${allUsers.length} employees`;
+  if (!allUsers.length) {
+    let message = 'No employees were returned. Check VM_EmployeeMaster and the Test SQL API response.';
+    if (usersLoadError) {
+      message = `Could not load employees: ${usersLoadError}`;
+    } else if (SQL_API_MODE === 'mock') {
+      message = 'Local mock mode has no employee records. Copy .env.example to .env, keep SQL_API_MODE=test, then restart the server to load VM_EmployeeMaster.';
+    }
+    body.innerHTML = `<tr><td colspan="3" class="px-3 py-6 text-center text-gray-400">${escapeHTML(message)}</td></tr>`;
+    if (count) count.textContent = usersLoadError ? 'Employee load failed' : '0 employees';
+  }
+}
+
+function initializeUsersDirectory() {
+  const searchEl = document.getElementById('users-search');
+  if (searchEl && !searchEl.dataset.bound) {
+    searchEl.dataset.bound = 'true';
+    searchEl.addEventListener('input', renderUsersDirectory);
+  }
+  renderUsersDirectory();
+  loadUsersList().catch(() => {});
+}
+</script>

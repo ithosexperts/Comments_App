@@ -1,0 +1,152 @@
+<div id="app-container" class="hidden flex flex-col h-screen bg-gray-100 overflow-hidden">
+
+  <!-- Task / application information spans the full width at the top. -->
+  <section id="task-summary" class="flex-none w-full bg-white border-b border-gray-200 shadow-sm overflow-y-auto" style="max-height: 28vh;">
+    <div class="px-4 py-3 md:px-6 md:py-4">
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div class="min-w-0">
+          <h1 class="text-xl md:text-2xl font-bold text-gray-900 truncate">{{ (taskDetails.appName or taskDetails.fmsName) if taskDetails else (task_name or '') }}</h1>
+          <div class="mt-1 text-sm text-gray-600">
+            <span class="font-medium">Task ID:</span>
+            <span class="font-semibold text-gray-900" id="task-id">{{ taskDetails.taskId if taskDetails else '' }}</span>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {% if taskDetails and taskDetails.submissionLink %}
+          <button onclick="window.open('{{ taskDetails.submissionLink }}', '_blank')" class="inline-flex items-center px-3 py-2 font-semibold text-white bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg shadow-sm hover:scale-[1.02] transition-all text-xs md:text-sm"><i class="fas fa-external-link-alt mr-2"></i> Submission Link</button>
+          {% endif %}
+          {% if taskDetails and taskDetails.fmsLink %}
+          <button onclick="window.open('{{ taskDetails.fmsLink }}', '_blank')" class="inline-flex items-center px-3 py-2 font-semibold text-white bg-gradient-to-r from-green-500 to-teal-500 rounded-lg shadow-sm hover:scale-[1.02] transition-all text-xs md:text-sm"><i class="fas fa-link mr-2"></i> FMS Link</button>
+          {% endif %}
+          {% if current_user_role and current_user_role|lower == 'admin' %}
+          <button onclick="window.open('https://script.google.com/a/macros/hosexperts.com/s/AKfycbx4NqnhDt9wzuM7wfMnKAT4QaxHsIcx2T6S1610VRTKuw5JcT-m1DRBYnNrwZkAZwo0zQ/exec', '_blank')" class="inline-flex items-center px-3 py-2 font-semibold text-white bg-gradient-to-r from-yellow-500 to-orange-500 rounded-lg shadow-sm hover:scale-[1.02] transition-all text-xs md:text-sm"><i class="fas fa-tasks mr-2"></i> Pending Tasks</button>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 md:gap-3">
+        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Stage</div>
+          <div class="text-sm font-medium text-gray-900">{{ taskDetails.stageName if taskDetails else '' }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Doer</div>
+          <div class="text-sm font-medium text-gray-900 break-words">{{ taskDetails.doer if taskDetails else '' }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Process Owner</div>
+          <div class="text-sm font-medium text-gray-900 break-words">{{ taskDetails.processOwner if taskDetails else '' }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Manager</div>
+          <div class="text-sm font-medium text-gray-900 break-words">{{ taskDetails.manager if taskDetails else '' }}</div>
+        </div>
+        <div class="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+          <div class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">Planned Date</div>
+          <div class="text-sm font-medium text-gray-900 break-words">{{ taskDetails.plannedDateDisplay if taskDetails else '' }}</div>
+        </div>
+      </div>
+
+      <div class="hidden">
+        <div id="sender-name">{{ current_user_name or current_user_email }}</div>
+        <div id="manager-email">{{ taskDetails.managerEmail if taskDetails else '' }}</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Activity history is directly below the task information and uses the full width. -->
+  <main id="conversation-workspace" class="flex-1 min-h-0 w-full flex flex-col bg-gray-50">
+    <div class="flex-none px-4 pt-2 border-b border-gray-200 bg-white shadow-sm flex justify-between items-center gap-3">
+      <div class="flex items-center gap-2" role="tablist" aria-label="Activity tabs">
+        <button id="activity-tab-button" role="tab" aria-selected="true" onclick="showRightPanelTab('activity')" class="px-3 py-2 border-b-2 border-blue-600 text-blue-700 font-semibold text-sm">Activity &amp; Comments</button>
+        <button id="users-tab-button" role="tab" aria-selected="false" onclick="showRightPanelTab('users')" class="px-3 py-2 border-b-2 border-transparent text-gray-500 hover:text-blue-700 font-semibold text-sm">User</button>
+      </div>
+      <button id="activity-refresh-button" onclick="loadComments()" class="text-blue-600 hover:text-blue-800 text-sm font-medium whitespace-nowrap"><i class="fas fa-sync-alt mr-1"></i> Refresh</button>
+    </div>
+
+    <section id="activity-panel" role="tabpanel" aria-labelledby="activity-tab-button" class="flex-1 flex flex-col min-h-0">
+      <div id="comment-container" class="flex-1 overflow-y-auto p-3 md:p-5 space-y-3 md:space-y-4">
+        <div class="flex justify-center mt-10"><div class="loader"></div></div>
+      </div>
+    </section>
+
+    <section id="users-panel" role="tabpanel" aria-labelledby="users-tab-button" class="hidden flex-1 flex-col min-h-0 bg-white">
+      <div class="flex-none p-4 border-b border-gray-100">
+        <label for="users-search" class="block text-xs font-semibold text-gray-500 mb-2">SEARCH EMPLOYEES</label>
+        <input id="users-search" type="search" placeholder="Search by name, email or rights..." class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+      </div>
+      <div class="flex-1 overflow-auto p-4">
+        <table class="w-full text-sm text-left border-collapse">
+          <thead class="sticky top-0 bg-gray-50 text-gray-600 uppercase text-xs tracking-wide">
+            <tr><th scope="col" class="px-3 py-3 border-b">User Name</th><th scope="col" class="px-3 py-3 border-b">Email</th><th scope="col" class="px-3 py-3 border-b">Rights</th></tr>
+          </thead>
+          <tbody id="users-table-body" class="divide-y divide-gray-100">
+            <tr><td colspan="3" class="px-3 py-6 text-center text-gray-400">Loading users...</td></tr>
+          </tbody>
+        </table>
+        <p id="users-empty-state" class="hidden py-8 text-center text-gray-500">No employees match this search.</p>
+      </div>
+      <div id="users-count" class="flex-none px-4 py-3 border-t border-gray-100 text-xs text-gray-500">0 employees</div>
+    </section>
+
+    <!-- Composer stays at the bottom; chat history scrolls above it. -->
+    <div id="composer-area" class="flex-none flex flex-col p-3 md:p-4 bg-white composer-background shadow-inner relative z-20 border-t border-gray-200 min-h-0" style="height: min(310px, 38vh); min-height: 220px;">
+      <div id="new-thread-overlay"
+           onclick="activateComposer()"
+           class="absolute inset-0 z-50 bg-gray-50/95 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100/95 transition-colors backdrop-blur-sm">
+        <div class="p-4 rounded-full bg-white shadow-lg mb-3 transform transition-transform hover:scale-110 border border-gray-100">
+          <i class="fas fa-pen-fancy text-blue-600 text-3xl"></i>
+        </div>
+        <span class="font-bold text-gray-700 text-lg tracking-wide">Click to Start New Thread</span>
+      </div>
+
+      <div class="relative flex-1 flex flex-col min-h-0">
+        <div id="main-mention-dropdown" class="mention-dropdown hidden"></div>
+        <div id="emoji-picker" class="hidden absolute bottom-full mb-2 bg-white border rounded-lg shadow-lg p-2 grid grid-cols-8 gap-1 z-20"></div>
+
+        <div class="flex-1 flex flex-col border border-gray-300 rounded-lg focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500 bg-white transition-all shadow-sm min-h-0">
+          <div class="flex-none format-toolbar bg-gray-50 border-b border-gray-200 rounded-t-lg px-2" id="main-format-toolbar">
+            <button data-command="bold"><i class="fas fa-bold"></i></button>
+            <button data-command="italic"><i class="fas fa-italic"></i></button>
+            <button data-command="underline"><i class="fas fa-underline"></i></button>
+            <button data-command="insertOrderedList"><i class="fas fa-list-ol"></i></button>
+            <button data-command="insertUnorderedList"><i class="fas fa-list-ul"></i></button>
+          </div>
+
+          <div id="comment-input"
+               contenteditable="true"
+               class="flex-1 w-full focus:outline-none p-3 md:p-4 overflow-y-auto comment-input min-h-0"
+               data-placeholder="Start with @ to mention a user..."></div>
+
+          <div id="dynamic-type-area" class="flex-none px-4 pb-2 pt-2 bg-white hidden"></div>
+
+          <div class="flex-none flex items-center justify-between p-2 md:p-3 bg-gray-50 rounded-b-lg border-t border-gray-100">
+            <div class="flex items-center space-x-3">
+              <button id="attach-button" title="Attach file" class="text-gray-500 hover:text-blue-600 transition-colors"><i class="fas fa-paperclip text-lg"></i></button>
+              <button id="camera-button" title="Capture photo" class="text-gray-500 hover:text-blue-600 transition-colors"><i class="fas fa-camera text-lg"></i></button>
+              <button id="audio-button" title="Record audio" class="text-gray-500 hover:text-red-600 transition-colors"><i class="fas fa-microphone text-lg"></i></button>
+              <button id="mention-button" title="Mention user" class="text-gray-500 hover:text-blue-600 transition-colors"><i class="fas fa-at text-lg"></i></button>
+              <button id="emoji-button" title="Add emoji" class="text-gray-500 hover:text-yellow-500 transition-colors"><i class="far fa-smile text-lg"></i></button>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="send-button" class="w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 disabled:bg-blue-300 shadow-md transition-all" disabled>
+                <i class="fas fa-paper-plane"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="recording-status" class="hidden mt-2 text-sm text-red-600 font-mono flex items-center justify-center bg-red-50 p-1 rounded"></div>
+      <div id="file-preview-container" class="mt-2"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+function activateComposer() {
+    const overlay = document.getElementById('new-thread-overlay');
+    if (!overlay) return;
+    overlay.style.display = "none";
+}
+</script>

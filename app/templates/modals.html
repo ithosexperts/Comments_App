@@ -1,0 +1,34 @@
+<div id="loader-overlay" class="hidden fixed inset-0 bg-white bg-opacity-75 flex items-center justify-center z-50">
+<div class="loader"></div>
+</div>
+
+<input type="file" id="file-input" class="hidden">
+<input type="file" id="camera-input" accept="image/*" capture="environment" class="hidden">
+
+<div id="attachment-modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+<div class="relative">
+<img id="attachment-modal-img" src="" class="max-w-full max-h-full rounded-lg" style="max-height: 90vh;" />
+<button onclick="closeModal()" class="absolute -top-2 -right-2 p-1 bg-white rounded-full text-black text-2xl">&times;</button>
+</div>
+</div>
+
+<div id="error-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+<div class="bg-white p-6 rounded-lg shadow-lg w-96">
+<h3 class="text-lg font-medium mb-4">Error</h3>
+<p id="error-message" class="text-gray-600 mb-4"></p>
+<button id="close-error-modal" class="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600">Close</button>
+</div>
+</div>
+
+<div id="globalUploadOverlay" class="hidden fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[10000] flex-col items-center justify-center p-4">
+  <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl flex flex-col items-center text-center transform transition-all scale-100">
+    <div class="w-12 h-12 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+    <h3 id="globalUploadTitle" class="text-lg font-extrabold text-slate-900 mb-1 tracking-tight">Uploading...</h3>
+    <p id="globalUploadText" class="text-sm text-slate-500 font-medium mb-4">0%</p>
+    <div class="w-full bg-slate-100 rounded-full h-2 mb-2 overflow-hidden shadow-inner">
+      <div id="globalUploadBar" class="bg-indigo-600 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+    </div>
+    <p id="globalUploadSize" class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">0 MB / 0 MB</p>
+  </div>
+</div>
+

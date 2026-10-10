@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Task Activity Feed</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+
+{% include 'css.html' %}
+
+{% include 'js-config.html' %}
+{% include 'rpc-bridge.html' %}
+
+</head>
+<body class="text-gray-800">
+
+{% include 'modals.html' %}
+{% include 'main-ui.html' %}
+{% include 'js-state.html' %}
+{% include 'js-users.html' %}
+{% include 'js-utils.html' %}
+{% include 'js-mentions.html' %}
+{% include 'js-upload.html' %}
+{% include 'js-comments.html' %}
+{% include 'js-main.html' %}
+
+
+</body>
+</html>

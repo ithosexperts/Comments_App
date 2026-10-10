@@ -1,0 +1,401 @@
+<script>
+const CASE_API_URL = "/api/case/system-command";
+
+let caseAvailableLabels = [];
+let caseSelectedLabels = new Set();
+let caseComposerRecipients = [];
+let casePendingFiles = [];
+window.activeCaseContext = {};
+
+document.addEventListener("DOMContentLoaded", function() {
+    if (typeof SERVER_COMMENT_ID !== 'undefined' && SERVER_COMMENT_ID) {
+        google.script.run
+            .withSuccessHandler(function(cases) {
+                const container = document.getElementById('linked-cases-container');
+                if (!container || !cases) return;
+                container.innerHTML = '';
+                cases.forEach(c => {
+                    container.innerHTML += `<button onclick="window.open('${c.url}', '_blank')" class="flex items-center justify-between px-4 py-2.5 font-bold text-slate-700 bg-white border-2 border-indigo-100 rounded-xl shadow-sm hover:border-indigo-400 hover:bg-indigo-50 hover:text-indigo-700 transition-all text-sm w-full text-left group"><span class="flex items-center"><i class="fas fa-briefcase text-indigo-400 mr-3 group-hover:scale-110 transition-transform"></i> ${c.caseId}</span><i class="fas fa-arrow-right opacity-40 group-hover:opacity-100 group-hover:translate-x-1 transition-all"></i></button>`;
+                });
+            })
+            .getLinkedCasesBackend(SERVER_COMMENT_ID);
+    }
+});
+
+async function apiCall(action, params = {}, retries = 2) {
+    if (CURRENT_USER_EMAIL) params.reqUserEmail = CURRENT_USER_EMAIL;
+    try {
+        const response = await fetch(CASE_API_URL, {
+            method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: action, params: params }), credentials: 'omit'
+        });
+        const text = await response.text();
+        const result = JSON.parse(text);
+        if (!result.success) throw new Error(result.error || result.message);
+        return result.data !== undefined ? result.data : result;
+    } catch (err) {
+        if (retries > 0) {
+            await new Promise(r => setTimeout(r, 1000));
+            return apiCall(action, params, retries - 1);
+        }
+        throw err;
+    }
+}
+
+function showCaseDialog(title, messageHtml, isConfirm, onConfirmCallback) {
+    document.getElementById('dialogTitle').innerText = title;
+    document.getElementById('dialogMessage').innerHTML = messageHtml;
+    const btnContainer = document.getElementById('dialogButtons');
+    if(isConfirm) {
+        btnContainer.innerHTML = `<button type="button" onclick="closeCustomDialog()" class="px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100 transition-colors">Cancel</button> <button type="button" id="dialogConfirmBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-indigo-700 transition-colors">Confirm</button>`;
+        document.getElementById('dialogConfirmBtn').onclick = () => { closeCustomDialog(); if(onConfirmCallback) onConfirmCallback(); };
+    } else {
+        btnContainer.innerHTML = `<button type="button" onclick="closeCustomDialog()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-indigo-700 transition-colors">OK</button>`;
+    }
+    document.getElementById('customDialog').classList.remove('hidden');
+}
+
+function closeCustomDialog() { document.getElementById('customDialog').classList.add('hidden'); }
+
+function openCaseModal(contextId) {
+    const fmsName = document.querySelector('h1')?.innerText.trim() || 'Unknown FMS';
+    const taskId = document.getElementById('task-id')?.innerText.trim() || 'No ID';
+    const stageName = document.querySelector('.px-3.py-1')?.innerText.trim() || 'General';
+    
+    // FIX 1: Safely fallback to CURRENT_USER_EMAIL to prevent ReferenceErrors when no @mention exists
+    const fallbackEmail = typeof CURRENT_USER_EMAIL !== 'undefined' ? CURRENT_USER_EMAIL : 'Unknown';
+    let rawEmail = document.getElementById('sender-name')?.innerText.trim() || fallbackEmail;
+    
+    const creatorEmail = rawEmail.replace(/["']/g, ""); 
+    
+    let resolvedName = creatorEmail;
+    if (creatorEmail && creatorEmail !== 'Unknown' && typeof usersList !== 'undefined') {
+        const userObj = usersList.find(u => u.email.toLowerCase() === creatorEmail.toLowerCase());
+        if (userObj && userObj.name) resolvedName = userObj.name; 
+    }
+
+    window.activeCaseContext = { fmsName, taskId, stageName, creatorName: creatorEmail };
+    document.getElementById('modal-fms-name').innerText = fmsName;
+    document.getElementById('modal-task-id').innerText = taskId;
+    document.getElementById('modal-stage-name').innerText = stageName;
+    
+    const nameDisplay = document.getElementById('modal-creator-name');
+    nameDisplay.innerText = resolvedName;
+
+    document.getElementById('convForm').reset();
+    casePendingFiles = [];
+    renderCaseFileList();
+    if(document.getElementById('f_message_rich')) document.getElementById('f_message_rich').innerHTML = '';
+    if(document.getElementById('f_details_rich')) document.getElementById('f_details_rich').innerHTML = '';
+    document.getElementById('new_case_member_search').value = '';
+
+    caseComposerRecipients = [];
+    if (creatorEmail && creatorEmail !== 'Unknown') {
+        caseComposerRecipients.push({ name: resolvedName, email: creatorEmail, role: 'Admin' });
+    }
+    renderCaseMembers();
+    
+    if (caseAvailableLabels.length === 0) {
+        apiCall('getLabels').then(labels => {
+            caseAvailableLabels = labels || [];
+            renderCaseLabels();
+        }).catch(err => {
+            console.error("Failed to load labels via API:", err);
+            const labelsContainer = document.getElementById('labels_container');
+            if (labelsContainer) labelsContainer.innerHTML = `<span class="text-xs text-red-500 font-bold">Failed to load labels.</span>`;
+        });
+    }
+
+    document.getElementById('appModal').classList.remove('hidden');
+    
+    // FIX 2: Safely format the display name without relying purely on the existence of an '@' symbol
+    if (resolvedName === creatorEmail || (resolvedName && resolvedName.includes('@'))) {
+        const namePart = creatorEmail.includes('@') ? creatorEmail.split('@')[0] : creatorEmail;
+        if (namePart) {
+            nameDisplay.innerText = namePart.charAt(0).toUpperCase() + namePart.slice(1);
+        }
+    }
+}
+
+function closeCaseModal() { document.getElementById('appModal').classList.add('hidden'); }
+
+function renderCaseLabels() {
+    document.getElementById('labels_container').innerHTML = caseAvailableLabels.map(label => `<span onclick="toggleCaseLabel('${label}')" class="cursor-pointer px-3 py-1.5 rounded-full text-xs font-bold transition-all shadow-sm border ${caseSelectedLabels.has(label) ? 'bg-green-800 text-white border-green-900' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}">${label}</span>`).join('');
+}
+
+function toggleCaseLabel(label) { 
+    caseSelectedLabels.has(label) ? caseSelectedLabels.delete(label) : caseSelectedLabels.add(label); 
+    renderCaseLabels();
+}
+
+async function createCaseLabel() {
+    const val = document.getElementById('new_label_input').value.trim();
+    if(!val) return;
+    try {
+        await apiCall('addLabel', {label: val});
+        caseAvailableLabels.push(val);
+        caseSelectedLabels.add(val);
+        document.getElementById('new_label_input').value = '';
+        renderCaseLabels();
+    } catch(e) {
+        showCaseDialog("Error", "Failed to add label", false);
+    }
+}
+
+function renderCaseMembers() {
+    const listContainer = document.getElementById('new_case_members_list');
+    listContainer.innerHTML = caseComposerRecipients.map((m, i) => `<span class="px-2 py-1 ${m.role === 'Admin' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-slate-100 text-slate-800 border-slate-200'} border text-xs rounded-lg font-bold shadow-sm flex items-center gap-1">${m.role === 'Admin' ? '👑' : '👤'} ${escapeHTML(m.name)}${(m.email !== window.activeCaseContext.creatorName) ? `<button type="button" onclick="removeCaseMember(${i})" class="ml-1 text-slate-400 hover:text-red-500 font-bold">&times;</button>` : ''}</span>`).join('');
+}
+
+function removeCaseMember(index) { caseComposerRecipients.splice(index, 1); renderCaseMembers(); }
+
+let searchCaseMemberTimeout;
+function searchCaseMember(q) {
+    clearTimeout(searchCaseMemberTimeout);
+    searchCaseMemberTimeout = setTimeout(() => {
+        const dropdown = document.getElementById('new_case_member_dropdown');
+        if (!q) { dropdown.classList.add('hidden'); return; }
+        
+        const existingEmails = caseComposerRecipients.map(r => r.email);
+        const queryLower = q.toLowerCase();
+        
+        const filtered = typeof usersList !== 'undefined' ? usersList.filter(u => {
+            if(!u || !u.email) return false;
+            const uName = String(u.name || '').toLowerCase();
+            const uEmail = String(u.email).toLowerCase();
+            return (uName.includes(queryLower) || uEmail.includes(queryLower)) && !existingEmails.includes(u.email);
+        }) : [];
+
+        if (filtered.length === 0) {
+            dropdown.innerHTML = '<div class="p-3 text-sm text-slate-500">No users found</div>';
+        } else {
+            dropdown.innerHTML = filtered.map(u => `<div class="p-3 hover:bg-indigo-50 border-b flex justify-between items-center cursor-pointer">
+                <div class="flex flex-col"><span class="text-sm font-medium text-slate-800">${escapeHTML(u.name || u.email || 'Unknown')}</span><span class="text-[10px] text-slate-500">${escapeHTML(u.email || '')}</span></div>
+                <div class="flex gap-1">
+                    <button type="button" onclick="addCaseMember('${String(u.name || '').replace(/'/g, "\\'")}', '${String(u.email||'').replace(/'/g, "\\'")}', 'Admin')" class="px-2 py-1 bg-blue-100 text-blue-700 text-[10px] rounded font-bold shadow-sm">Admin</button>
+                    <button type="button" onclick="addCaseMember('${String(u.name || '').replace(/'/g, "\\'")}', '${String(u.email||'').replace(/'/g, "\\'")}', 'User')" class="px-2 py-1 bg-slate-200 text-slate-700 text-[10px] rounded font-bold shadow-sm">User</button>
+                </div>
+            </div>`).join('');
+        }
+        dropdown.classList.remove('hidden');
+    }, 200);
+}
+
+function addCaseMember(name, email, role) {
+    caseComposerRecipients.push({ name: name, email: email, role: role });
+    document.getElementById('new_case_member_search').value = '';
+    document.getElementById('new_case_member_dropdown').classList.add('hidden');
+    renderCaseMembers();
+}
+
+window.handleCaseFileSelect = function(e) { addCaseFiles(e.target.files); };
+window.handleCaseDrop = function(e) { e.preventDefault(); addCaseFiles(e.dataTransfer.files); };
+function formatCaseSize(bytes){
+    if(!bytes) return "0 KB";
+    const kb = bytes / 1024;
+    if(kb < 1024) return kb.toFixed(1) + " KB";
+    return (kb / 1024).toFixed(1) + " MB";
+}
+
+function addCaseFiles(files) { 
+    Array.from(files).forEach(file => { 
+        if(casePendingFiles.length >= 10) return; 
+        if(!casePendingFiles.some(pf => pf.name === file.name)) casePendingFiles.push(file); 
+    });
+    renderCaseFileList();
+}
+
+function renderCaseFileList() {
+    const list = document.getElementById('case_file_list');
+    list.innerHTML = '';
+    casePendingFiles.forEach((file, index) => {
+        let previewHTML = `<i class="fas fa-file-alt text-indigo-400 text-xl"></i>`;
+        if (file.type && file.type.startsWith('image/')) {
+            const url = URL.createObjectURL(file);
+            previewHTML = `<img src="${url}" class="w-full h-full object-cover">`;
+        }
+        list.innerHTML += `<div class="flex items-center gap-3 bg-white border border-slate-200 rounded-xl p-2 pr-8 relative shadow-sm w-60 max-w-full hover:border-indigo-300 transition-colors group">
+            <div class="w-10 h-10 rounded-lg bg-slate-50 shrink-0 flex items-center justify-center overflow-hidden border border-slate-100">${previewHTML}</div>
+            <div class="flex flex-col min-w-0 flex-1"><span class="text-xs font-bold text-slate-800 truncate block">${file.name}</span><span class="text-[10px] font-semibold text-slate-400 mt-0.5">${formatCaseSize(file.size)}</span></div>
+            <button type="button" onclick="removeCasePendingFile(${index})" class="absolute top-2 right-2 w-5 h-5 bg-slate-100 hover:bg-red-500 text-slate-600 hover:text-white rounded-full flex items-center justify-center text-[10px] transition-all cursor-pointer opacity-80 hover:opacity-100 shadow-sm" title="Remove File"><i class="fas fa-times"></i></button>
+        </div>`;
+    });
+}
+window.removeCasePendingFile = function(index) { casePendingFiles.splice(index, 1); renderCaseFileList(); };
+
+window.cancelUploadFlags = {};
+function showUploadOverlay(title, filesArray) {
+    document.getElementById('globalUploadTitle').innerText = title || 'Processing...';
+    document.getElementById('globalUploadText').innerText = filesArray ? `0 of ${filesArray.length} Files Uploaded` : 'Starting...';
+    const overlay = document.getElementById('globalUploadOverlay');
+    
+    let listContainer = document.getElementById('customUploadProgressList');
+    if (!listContainer) {
+        listContainer = document.createElement('div');
+        listContainer.id = 'customUploadProgressList';
+        listContainer.className = 'flex flex-col gap-2 max-h-48 overflow-y-auto w-full mt-4 pr-1';
+        const contentBox = overlay.querySelector('.bg-white');
+        contentBox.appendChild(listContainer);
+    }
+
+    let html = '';
+    window.cancelUploadFlags = {};
+    if (filesArray && filesArray.length > 0) {
+        filesArray.forEach((f, i) => {
+            window.cancelUploadFlags[i] = false;
+            html += `<div class="flex items-center justify-between p-2.5 border border-slate-200 rounded-lg bg-slate-50 text-left relative overflow-hidden">
+                <div id="upload-bg-${i}" class="absolute left-0 top-0 bottom-0 bg-indigo-50/50 transition-all w-0"></div>
+                <div class="flex-1 min-w-0 pr-3 relative z-10">
+                    <div class="text-[11px] font-bold text-slate-700 truncate">${f.name}</div>
+                    <div class="w-full bg-slate-200 rounded-full h-1.5 mt-1.5 overflow-hidden shadow-inner">
+                        <div id="upload-bar-${i}" class="bg-indigo-500 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="flex justify-between items-center mt-1"><div id="upload-status-${i}" class="text-[9px] text-slate-500 font-bold uppercase tracking-wide">Waiting...</div><div id="upload-pct-${i}" class="text-[9px] text-indigo-600 font-bold">0%</div></div>
+                </div>
+            </div>`;
+        });
+    }
+    listContainer.innerHTML = html;
+    overlay.classList.remove('hidden'); 
+    overlay.classList.add('flex');
+}
+
+function hideUploadOverlay() {
+    const overlay = document.getElementById('globalUploadOverlay');
+    overlay.classList.add('hidden'); overlay.classList.remove('flex');
+}
+
+async function uploadFileResumable(file, fileIndex, onProgress) {
+    const uploadUrl = await apiCall('getResumableUploadUrl', { fileName: file.name, mimeType: file.type || "application/octet-stream" });
+    const chunkSize = 2097152;
+    let start = 0;
+    
+    return new Promise((resolve, reject) => {
+        function uploadNext() {
+            if (fileIndex >= 0 && window.cancelUploadFlags[fileIndex]) return reject(new Error("Canceled"));
+            let end = Math.min(start + chunkSize, file.size) - 1;
+            let blob = file.slice(start, end + 1);
+            let reader = new FileReader();
+            reader.onload = async function(e) {
+                if (fileIndex >= 0 && window.cancelUploadFlags[fileIndex]) return reject(new Error("Canceled"));
+                let base64Data = e.target.result.split(",")[1];
+                let percent = Math.round(((end + 1) / file.size) * 100);
+                if(onProgress) onProgress(percent);
+
+                try {
+                    let res = await apiCall('uploadChunkToDrive', { uploadUrl: uploadUrl, base64Data: base64Data, start: start, end: end, totalSize: file.size });
+                    if (res.status === "incomplete") { start = end + 1; uploadNext(); }
+                    else if (res.status === "done") { resolve({ url: `https://drive.google.com/file/d/${res.fileId}/view`, name: file.name }); }
+                } catch(err) { reject(err); }
+            };
+            reader.readAsDataURL(blob);
+        }
+        uploadNext();
+    });
+}
+
+async function uploadMultipleFilesResumable(filesArray) {
+    let uploadedData = [];
+    for (let i = 0; i < filesArray.length; i++) {
+        const file = filesArray[i];
+        const statusEl = document.getElementById(`upload-status-${i}`);
+        if (statusEl) { statusEl.innerText = "Uploading..."; statusEl.classList.replace('text-slate-500', 'text-indigo-600'); }
+        try {
+            const result = await uploadFileResumable(file, i, (percent) => {
+                const bar = document.getElementById(`upload-bar-${i}`); if(bar) bar.style.width = `${percent}%`;
+                const bg = document.getElementById(`upload-bg-${i}`); if(bg) bg.style.width = `${percent}%`;
+                const pct = document.getElementById(`upload-pct-${i}`); if(pct) pct.innerText = `${percent}%`;
+            });
+            if (result && result.url) {
+                uploadedData.push({ url: result.url, name: result.name });
+                if (statusEl) { statusEl.innerText = "COMPLETED"; statusEl.className = "text-[9px] text-green-600 font-bold uppercase tracking-wide"; }
+                const bar = document.getElementById(`upload-bar-${i}`); if (bar) bar.classList.replace('bg-indigo-500', 'bg-green-500');
+                const pct = document.getElementById(`upload-pct-${i}`); if (pct) { pct.innerText = "100%"; pct.classList.replace('text-indigo-600', 'text-green-600'); }
+            }
+        } catch(e) {
+            if (statusEl) { statusEl.innerText = "FAILED"; statusEl.className = "text-[9px] text-red-500 font-bold uppercase tracking-wide"; }
+        }
+    }
+    return uploadedData;
+}
+
+window.handleCaseFormSubmit = async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('submitCaseBtn');
+    btn.disabled = true;
+    btn.innerText = 'Uploading...';
+    
+    try {
+        let fileUrls = [];
+        if(casePendingFiles.length > 0) { 
+            showUploadOverlay("Creating New Case", casePendingFiles);
+            const uploadedData = await uploadMultipleFilesResumable(casePendingFiles);
+            fileUrls = uploadedData.map(d => d.url);
+            hideUploadOverlay();
+        } 
+
+        const userSubject = document.getElementById('f_subject').value.trim();
+        const { fmsName, stageName, taskId, creatorName } = window.activeCaseContext;
+        const finalSubject = `${fmsName} ; ${stageName} ; ${taskId} - ${userSubject}`;
+
+        let scriptBaseUrl = "https://script.google.com/macros/s/AKfycbw_AkeZOSjOCHjteN3kGuruAHT2SBDIWwB0qqQhoYd9BFTklDveuMic-jXFiFIQ3dnE/exec";
+        try { if (document.referrer && document.referrer.includes('/exec')) { scriptBaseUrl = document.referrer.split('?')[0]; } } catch(e) {}
+        const cleanCommentId = String(
+    typeof SERVER_COMMENT_ID !== 'undefined' ? SERVER_COMMENT_ID : ''
+).replace(/^['"]+|['"]+$/g, '').trim();
+
+const actualSourceUrl = `${scriptBaseUrl}?commentId=${encodeURIComponent(cleanCommentId)}`;
+
+        const payload = {
+            reqUserEmail: CURRENT_USER_EMAIL,
+            createdBy: CURRENT_USER_EMAIL,
+            commentId: cleanCommentId,
+            taskId: document.getElementById("task-id").textContent.trim(),
+            stageName: document.getElementById("modal-stage-name").textContent.trim(),
+            fmsName: document.getElementById("modal-fms-name").textContent.trim(),
+            subject: finalSubject,
+            details: document.getElementById('f_details_rich') ? document.getElementById('f_details_rich').innerHTML : '',
+            message: document.getElementById('f_message_rich') ? document.getElementById('f_message_rich').innerHTML : '',
+            labels: Array.from(caseSelectedLabels),
+            adminEmails: caseComposerRecipients.filter(r => r.role === 'Admin').map(r => r.email),
+            userEmails: caseComposerRecipients.filter(r => r.role === 'User').map(r => r.email),
+            attachments: fileUrls,
+            sourceUrl: actualSourceUrl // SAVING THE TASK QUEUE URL HERE IN COL M
+        };
+
+        const response = await new Promise((resolve, reject) => {
+            google.script.run
+                .withSuccessHandler(res => resolve(res))
+                .withFailureHandler(err => reject(err))
+                .createCaseBackend(payload);
+        });
+        
+        closeCaseModal();
+        btn.disabled = false;
+        btn.innerText = 'Post Case';
+        const container = document.getElementById('linked-cases-container');
+        if (container && response.url && response.id) {
+            container.innerHTML += `<button onclick="window.open('${response.url}', '_blank')" class="inline-flex items-center px-4 py-2 font-semibold text-white bg-gradient-to-r from-pink-500 to-rose-500 rounded-lg shadow-md hover:scale-105 transition-all text-sm"><i class="fas fa-briefcase mr-2"></i> ${response.id}</button>`;
+        }
+
+        const successHtml = `
+            <div class="text-center">
+                <i class="fas fa-check-circle text-green-500 text-5xl mb-3"></i>
+                <h3 class="text-lg font-bold text-slate-800 mb-1">Case Created Successfully</h3>
+                <p class="text-sm font-mono text-slate-500 mb-6 font-bold bg-slate-100 py-1 rounded">${response.id}</p>
+                <div class="flex flex-col gap-2">
+                    <button type="button" onclick="window.open('${response.url}', '_blank')" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold shadow-md transition-colors flex items-center justify-center gap-2"><i class="fas fa-external-link-alt"></i> Open Case</button>
+                    <button type="button" onclick="navigator.clipboard.writeText('${response.url}'); alert('Link Copied!');" class="w-full border-2 border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2"><i class="far fa-copy"></i> Copy Link</button>
+                </div>
+            </div>
+        `;
+        showCaseDialog("Success", successHtml, false);
+
+    } catch(err) {
+        hideUploadOverlay();
+        btn.disabled = false;
+        btn.innerText = 'Post Case';
+        showCaseDialog("Error", `<p class="text-red-500">Failed to create case.<br>${err.toString()}</p>`, false);
+    }
+};
+</script>

@@ -1,0 +1,171 @@
+<script>
+function loadComments(){
+  showLoader();
+  google.script.run
+    .withSuccessHandler(populateComments)
+    .withFailureHandler(err => showError("Load failed: " + err.message))
+    .getCommentsOnly(commentId);
+}
+
+function populateComments(comments) {
+    hideLoader();
+    allComments = comments;
+    const container = document.getElementById('comment-container');
+    container.innerHTML = '';
+    
+    if (!comments || !comments.length) {
+        container.innerHTML = '<div class="text-center text-gray-500">No comments yet.</div>';
+        return;
+    }
+
+    const threadsMap = {};
+    comments.forEach(c => {
+        if (!threadsMap[c.threadId]) {
+            threadsMap[c.threadId] = { id: c.threadId, items: [], startTime: new Date(c.timestamp) };
+        }
+        threadsMap[c.threadId].items.push(c);
+        if (new Date(c.timestamp) < threadsMap[c.threadId].startTime) {
+            threadsMap[c.threadId].startTime = new Date(c.timestamp);
+        }
+    });
+    
+    const sortedThreadGroups = Object.values(threadsMap).sort((a, b) => a.startTime - b.startTime);
+
+    sortedThreadGroups.forEach(threadGroup => {
+        const threadItems = threadGroup.items;
+        const roots = [];
+        
+        threadItems.forEach(item => { item.children = []; });
+
+        threadItems.forEach(item => {
+            if (item.type === 'Reply' && item.askId) {
+                const parentAsk = threadItems.find(p => p.type === 'Ask' && p.askId && p.askId.toString().trim() === item.askId.toString().trim());
+                if (parentAsk) parentAsk.children.push(item);
+                else roots.push(item);
+            } else {
+                roots.push(item);
+            }
+        });
+
+        roots.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        container.innerHTML += renderThread(roots);
+    });
+    
+    container.querySelectorAll('.comment-body img').forEach(img => {
+        img.style.cursor = 'pointer';
+        img.onclick = () => openModal(img.src);
+    });
+    container.scrollTop = 0;
+}
+
+function renderThread(list, level = 0) {
+    return list.map(comment => {
+        const threadColor = comment.threadColor || '#f3f4f6';
+        const isDefault = threadColor === '#f3f4f6';
+        const textColorStyle = isDefault ? 'color: #1f2937;' : 'color: white;';
+        const bgStyle = `style="background-color: ${threadColor}; ${textColorStyle}"`;
+        const indentStyle = level > 0 ? `style="margin-left:${level * 25}px"` : '';
+
+        return `
+            <div class="mb-4" ${indentStyle}>
+                <div class="main-comment-card shadow-sm" ${bgStyle}>
+                    ${renderComment(comment, true, !isDefault)}
+                </div>
+                ${comment.children && comment.children.length ? renderThread(comment.children, level + 1) : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+function renderComment(c, canBeRepliedTo, isDarkBg = false, uniqueId, activeColor, displayThreadId) {
+    if (!c) return '';
+    const cleanSenderEmail = normalizeEmployeeEmail(c.sender);
+    const senderUser = (Array.isArray(usersList) ? usersList : []).find(u =>
+        normalizeEmployeeEmail(u && u.email) === cleanSenderEmail && String(u && u.name || '').trim()
+    );
+    // If the sender email does not map to an Active=Y employee in
+    // VM_EmployeeMaster, preserve the stored sender rather than invent a name.
+    const displayName = senderUser ? senderUser.name : (c.sender || 'Unknown user');
+
+    const textColorClass = isDarkBg ? 'text-gray-100' : 'text-gray-500';
+    const linkColorClass = isDarkBg ? 'text-white underline' : 'text-blue-600 hover:underline';
+    const bodyTextColorClass = isDarkBg ? 'text-white' : 'text-gray-800';
+    const finalThreadColor = activeColor || c.threadColor || '#f3f4f6';
+
+    let safeUniqueId = c.type === 'Ask' ? c.askId : (c.uniqueId || ('item-' + Math.floor(Math.random() * 1000000)));
+
+    const askIdLabel = (c.type === 'Ask' || c.type === 'Reply') && c.askId 
+        ? `<span class="ml-1 text-[10px] font-bold ${isDarkBg ? 'text-white' : 'text-gray-700'} opacity-80">#${escapeHTML(c.askId)}</span>` : '';
+
+    let typeBadgeHtml = '';
+    if (c.type === 'Ask') {
+        typeBadgeHtml = `<div class="flex items-center ml-2"><span class="px-2 py-0.5 bg-green-500 text-white rounded-full text-xs font-semibold shadow-sm">Ask</span>${askIdLabel}</div>`;
+    } else if (c.type === 'Reply') {
+        typeBadgeHtml = `<div class="flex items-center ml-2"><span class="px-2 py-0.5 bg-blue-500 text-white rounded-full text-xs font-semibold shadow-sm">Reply</span>${askIdLabel}</div>`;
+    } else {
+        typeBadgeHtml = `<span class="ml-2 px-2 py-0.5 bg-gray-500 text-white rounded-full text-xs font-semibold shadow-sm">Message</span>`;
+    }
+
+    const currentThreadId = displayThreadId || c.threadId;
+    const tagStyle = `background-color:rgba(255,255,255,0.25); color:inherit; border:1px solid rgba(255,255,255,0.3); padding:2px 8px; border-radius:999px; font-size:10px; font-weight:700; display:inline-block; white-space:nowrap;`;
+    const threadTag = currentThreadId ? `<span style="${tagStyle}">Thread: ${escapeHTML(currentThreadId)}</span>` : '';
+    const parentAskIdForBackend = c.askId || '';
+    
+    const actionSectionHtml = `<div class="ml-4 flex-shrink-0 text-right">
+            <div class="flex flex-col items-end gap-1 mb-1">${threadTag}</div>
+            ${canBeRepliedTo ? `
+                <button id="reply-button-${safeUniqueId}" onclick="toggleReplyBox('${safeUniqueId}', '${parentAskIdForBackend}')" class="${linkColorClass} font-semibold p-1 rounded-md text-sm transition opacity-90 hover:opacity-100">Reply</button>
+            ` : ''}
+       </div>`;
+       
+    return `
+    <div style="background-color:${finalThreadColor}; padding:14px; border-radius:10px; margin-bottom:8px; border-left:5px solid ${isDarkBg ? 'rgba(255,255,255,0.3)' : finalThreadColor}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+        <div class="flex items-center gap-2 text-sm flex-wrap opacity-90">
+            <span class="font-bold text-base ${isDarkBg ? 'text-white' : 'text-gray-900'}">${escapeHTML(displayName)}</span>
+            <span class="${textColorClass} text-xs">${c.timestamp ? new Date(c.timestamp).toLocaleString() : ''}</span>
+            ${typeBadgeHtml}
+        </div>
+        <div class="mt-3 space-y-2 comment-body">
+            <div class="flex items-start justify-between">
+                <div class="break-words flex-grow ${bodyTextColorClass}">${c.text || ''}</div>
+                ${actionSectionHtml}
+            </div>
+            ${c.attachmentUrl ? `<div class="mt-2"><iframe src="${c.attachmentUrl}" height="${c.attachmentFileName && c.attachmentFileName.match(/\.(webm|mp3|wav|ogg|m4a)$/i) ? '80' : '350'}" class="w-full max-w-xl rounded-lg border border-gray-300" allow="autoplay; encrypted-media" frameborder="0"></iframe></div>` : ''}
+        </div>
+        <div id="reply-composer-${safeUniqueId}" class="hidden mt-4 pl-3 border-l-2 border-white/30"></div>
+    </div>`;
+}
+
+function createReplyComposer(askId) {
+  return `<div class="relative p-2 mt-2 border-l-2 border-blue-400 ml-2 bg-white rounded-lg shadow-sm">
+    <div id="reply-mention-dropdown-${askId}" class="mention-dropdown hidden"></div>
+    <div class="relative flex flex-col border border-gray-300 rounded-lg focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-500 bg-white shadow-sm">
+      <div class="format-toolbar bg-gray-50 border-b border-gray-200 rounded-t-lg px-2" id="reply-format-toolbar-${askId}">
+        <button data-command="bold"><i class="fas fa-bold"></i></button>
+        <button data-command="italic"><i class="fas fa-italic"></i></button>
+        <button data-command="underline"><i class="fas fa-underline"></i></button>
+      </div>
+      <div id="reply-input-${askId}" contenteditable="true" class="w-full focus:outline-none p-4 comment-input reply-input text-black" style="min-height:100px;color:#000!important" data-placeholder="Start with @ to mention..."></div>
+      <div id="reply-type-area-${askId}" class="flex-none px-4 pb-2 pt-2 bg-white flex flex-wrap gap-2 border-t border-gray-50">
+        <button onclick="setReplyActionType('${askId}','Reply')" id="btn-reply-${askId}" class="type-bubble bg-gray-100 text-gray-500"><i class="fas fa-reply"></i> Reply</button>
+        <button onclick="setReplyActionType('${askId}','Ask')" id="btn-ask-${askId}" class="type-bubble bg-gray-100 text-gray-500"><i class="fas fa-question-circle"></i> New Ask</button>
+        <input type="hidden" id="reply-type-val-${askId}" value="">
+      </div>
+      <div class="flex items-center justify-between p-3 bg-gray-50 rounded-b-lg border-t border-gray-100">
+        <div class="flex items-center space-x-3 text-gray-500">
+          <button id="reply-attach-button-${askId}"><i class="fas fa-paperclip"></i></button>
+          <button id="reply-camera-button-${askId}"><i class="fas fa-camera"></i></button>
+          <button id="reply-audio-button-${askId}"><i class="fas fa-microphone"></i></button>
+          <button id="reply-emoji-button-${askId}" title="Add emoji" class="hover:text-yellow-500 transition-colors"><i class="far fa-smile"></i></button>
+        </div>
+        
+        <div class="flex items-center gap-2">
+           <button id="reply-send-button-${askId}" class="w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center hover:bg-blue-700 disabled:bg-blue-300" disabled><i class="fas fa-paper-plane"></i></button>
+        </div>
+
+      </div>
+    </div>
+    <div id="reply-file-preview-container-${askId}" class="mt-2"></div>
+  </div>`;
+}
+</script>

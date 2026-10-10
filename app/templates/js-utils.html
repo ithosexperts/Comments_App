@@ -1,0 +1,32 @@
+<script>
+// Use the employee master's OffEmail consistently for comment-name resolution.
+function normalizeEmployeeEmail(value) {
+  return String(value || '').replace(/^[\s"'`]+|[\s"'`]+$/g, '').trim().toLowerCase();
+}
+
+function applyFormat(command) { document.execCommand(command, false, null); }
+
+function handlePaste(e) {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, text);
+}
+
+function debounce(func, delay) {
+  let timeout;
+  return function(...args) {
+    const context = this;
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(context, args), delay);
+  };
+}
+
+function escapeHTML(s){ const p=document.createElement('p'); p.appendChild(document.createTextNode(s||'')); return p.innerHTML; }
+
+function openModal(url){ document.getElementById('attachment-modal-img').src=url; document.getElementById('attachment-modal').classList.remove('hidden'); }
+function closeModal(){ document.getElementById('attachment-modal-img').src=''; document.getElementById('attachment-modal').classList.add('hidden'); }
+
+function showLoader(){ document.getElementById('loader-overlay').classList.remove('hidden'); }
+function hideLoader(){ document.getElementById('loader-overlay').classList.add('hidden'); }
+function showError(msg){ document.getElementById('error-message').textContent=msg; document.getElementById('error-modal').classList.remove('hidden'); hideLoader(); }
+</script>

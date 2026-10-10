@@ -1,0 +1,24 @@
+<script>
+let commentId = SERVER_COMMENT_ID;
+let fileData, fileName, mimeType, previewUrl;
+let usersList = [];
+let usersLoaded = false;
+let usersLoadPromise = null;
+let usersLoadError = "";
+let allComments = [];
+let mediaRecorder, audioChunks = [], isRecording = false;
+let recordingStartTime, recordingTimerInterval;
+let mentionState = {
+  active: false,
+  inputEl: null,
+  dropdownEl: null,
+  startPos: -1,
+  query: ''
+};
+let composerState = {
+  recipients: [], 
+  mode: 'SAME',   
+  globalType: 'Message' 
+};
+let replyState = {}; 
+</script>

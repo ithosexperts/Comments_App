@@ -1,0 +1,189 @@
+<script>
+function handleFileSelect(e){
+  const f = e.target.files[0]; if(!f) return;
+  fileData = f; mimeType = f.type; fileName = f.name||'capture.jpg';
+  if(previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(f);
+  onInput(document.getElementById('comment-input'), 'main');
+  const container = document.getElementById('file-preview-container');
+  let html='';
+  if(f.type.startsWith('image/')) {
+    html=`<div class="relative inline-block"><img src="${previewUrl}" class="w-20 h-20 object-cover rounded-lg"/><button onclick="resetFile()" class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full text-sm">&times;</button></div>`;
+  } else if(f.type.startsWith('audio/')) {
+    html = `<div class="flex items-center"><audio controls class="w-full"><source src="${previewUrl}" type="${f.type}">Your browser does not support the audio element.</audio><button onclick="resetFile()" class="ml-2 text-red-500 hover:text-red-700 p-2 flex-shrink-0"><i class="fas fa-trash-alt"></i></button></div>`;
+  } else {
+    html=`<div class="flex items-center space-x-2 p-2 bg-gray-100 rounded-lg border border-gray-300"><span class="flex-1 text-sm truncate">${escapeHTML(fileName)}</span><button onclick="resetFile()" class="text-red-500 font-bold">&times;</button></div>`;
+  }
+  container.innerHTML = html;
+}
+
+function resetFile(){
+  if(previewUrl) URL.revokeObjectURL(previewUrl);
+  fileData=fileName=mimeType=previewUrl=null;
+  document.getElementById('file-input').value='';
+  document.getElementById('camera-input').value='';
+  document.getElementById('file-preview-container').innerHTML = '';
+  onInput(document.getElementById('comment-input'), 'main');
+  audioChunks=[];
+}
+
+function handleReplyFileSelect(askId, type) {
+  const inputId = type === 'camera' ? 'camera-input' : 'file-input';
+  const input = document.getElementById(inputId);
+  input.onchange = e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (!replyState[askId]) replyState[askId] = {};
+    replyState[askId].fileData = f;
+    replyState[askId].mimeType = f.type;
+    replyState[askId].fileName = f.name || 'capture.jpg';
+    if (replyState[askId].previewUrl) URL.revokeObjectURL(replyState[askId].previewUrl);
+    replyState[askId].previewUrl = URL.createObjectURL(f);
+    showReplyFilePreview(askId);
+    onInput(document.getElementById(`reply-input-${askId}`), askId);
+    input.value = '';
+    input.onchange = null;
+  };
+  input.click();
+}
+
+function showReplyFilePreview(askId) {
+  const state = replyState[askId];
+  const container = document.getElementById(`reply-file-preview-container-${askId}`);
+  if (!container) return;
+  if (!state || !state.fileData) { container.innerHTML = ''; return; }
+  const f = state.fileData;
+  let html = '';
+  if (f.type.startsWith('image/')) {
+    html = `<div class="relative inline-block"><img src="${state.previewUrl}" class="w-20 h-20 object-cover rounded-lg"/><button onclick="resetReplyFile('${askId}')" class="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full text-sm">&times;</button></div>`;
+  } else if (f.type.startsWith('audio/')) {
+    html = `<div class="flex items-center"><audio controls class="w-full"><source src="${state.previewUrl}" type="${f.type}"></audio><button onclick="resetReplyFile('${askId}')" class="ml-2 text-red-500 hover:text-red-700 p-2 flex-shrink-0"><i class="fas fa-trash-alt"></i></button></div>`;
+  } else {
+    html = `<div class="flex items-center space-x-2 p-2 bg-gray-100 rounded-lg border border-gray-300"><span class="flex-1 text-sm truncate">${escapeHTML(state.fileName)}</span><button onclick="resetReplyFile('${askId}')" class="text-red-500 font-bold">&times;</button></div>`;
+  }
+  container.innerHTML = html;
+}
+
+function resetReplyFile(askId) {
+  const state = replyState[askId];
+  if (state && state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+  replyState[askId] = {};
+  showReplyFilePreview(askId);
+  onInput(document.getElementById(`reply-input-${askId}`), askId);
+}
+
+async function startWhatsAppStyleRecording(e) {
+  e.preventDefault(); if (isRecording) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = ev => audioChunks.push(ev.data);
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      if (audioChunks.length === 0) return;
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const file = new File([blob], `recording_${Date.now()}.webm`, { type: 'audio/webm' });
+      handleFileSelect({ target: { files: [file] } });
+      audioChunks = [];
+    };
+    audioChunks = [];
+    mediaRecorder.start();
+    isRecording = true;
+    const statusDiv = document.getElementById('recording-status');
+    statusDiv.classList.remove('hidden');
+    recordingStartTime = Date.now();
+    statusDiv.innerHTML = `<span class="blinking-dot mr-2"></span> Rec 00:00`;
+    recordingTimerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+      const seconds = (elapsed % 60).toString().padStart(2, '0');
+      statusDiv.innerHTML = `<span class="blinking-dot mr-2"></span> Rec ${minutes}:${seconds}`;
+    }, 1000);
+  } catch (err) { showError("Microphone access denied."); isRecording = false; }
+}
+
+function stopWhatsAppStyleRecording() {
+  if (!isRecording) return;
+  mediaRecorder.stop();
+  isRecording = false; clearInterval(recordingTimerInterval);
+  document.getElementById('recording-status').classList.add('hidden');
+}
+
+async function startReplyRecording(e, askId) {
+  e.preventDefault();
+  if (replyState[askId] && replyState[askId].isRecording) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    replyState[askId] = replyState[askId] || {};
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = ev => chunks.push(ev.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach(track => track.stop());
+      if (chunks.length === 0) return;
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const file = new File([blob], `recording_${Date.now()}.webm`, { type: 'audio/webm' });
+      replyState[askId].fileData = file;
+      replyState[askId].mimeType = file.type;
+      replyState[askId].fileName = file.name;
+      replyState[askId].previewUrl = URL.createObjectURL(file);
+      replyState[askId].isRecording = false;
+      showReplyFilePreview(askId);
+      onInput(document.getElementById(`reply-input-${askId}`), askId);
+    };
+    replyState[askId].mediaRecorder = recorder;
+    replyState[askId].audioChunks = chunks;
+    replyState[askId].isRecording = true;
+    recorder.start();
+  } catch (err) {
+    console.error("Reply Audio Error:", err);
+    showError('Microphone access denied: ' + err.message);
+  }
+}
+
+function stopReplyRecording(askId) {
+  if (replyState[askId] && replyState[askId].isRecording) {
+    replyState[askId].mediaRecorder.stop();
+    replyState[askId].isRecording = false;
+  }
+}
+
+async function uploadAndSend(file, commentData, replyAskId = null) {
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onload = async function() {
+    const base64Data = reader.result.split(',')[1];
+    const payload = { base64: base64Data, name: file.name, mime: file.type };
+    try {
+      const response = await fetch(UPLOAD_TUNNEL_URL, { method: 'POST', body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (result.status === 'success') {
+        commentData.attachmentUrl = result.url;
+        commentData.attachmentFileName = file.name;
+        google.script.run
+          .withSuccessHandler(() => {
+              loadComments();
+              if (replyAskId) {
+                  if(document.getElementById(`reply-composer-${replyAskId}`)) {
+                      toggleReplyBox(replyAskId);
+                      resetReplyFile(replyAskId);
+                  }
+              } else {
+                 resetMainComposer();
+              }
+              hideLoader();
+          })
+          .addNewComment(commentData);
+      } else {
+        alert("Upload Failed: " + result.message);
+        hideLoader();
+        if(replyAskId) document.getElementById(`reply-send-button-${replyAskId}`).disabled = false;
+        else document.getElementById('send-button').disabled = false;
+      }
+    } catch (err) {
+      alert("Network Error: " + err.message);
+      hideLoader();
+    }
+  };
+}
+</script>

@@ -1,0 +1,16 @@
+<script>
+const SERVER_COMMENT_ID = {{ comment_id | tojson }};
+const CURRENT_USER_EMAIL = {{ current_user_email | tojson }};
+const CURRENT_USER_NAME = {{ current_user_name | tojson }};
+const CURRENT_EMPLOYEE_CODE = {{ current_employee_code | tojson }};
+const CURRENT_USER_ROLE = {{ current_user_role | tojson }};
+const CURRENT_TABLE_NAME = {{ (taskDetails.tableName if taskDetails else table_name) | tojson }};
+const CURRENT_FMS_REF_ID = {{ (taskDetails.fmsRefId if taskDetails else '') | tojson }};
+const CURRENT_APP_ID = {{ (taskDetails.appId if taskDetails else '') | tojson }};
+const CURRENT_APP_NAME = {{ (taskDetails.appName if taskDetails else '') | tojson }};
+const CURRENT_STAGE_NO = {{ (taskDetails.stageNo if taskDetails else '') | tojson }};
+const CONTEXT_ERROR = {{ context_error | tojson }};
+const SQL_API_MODE = {{ sql_api_mode | tojson }};
+// Uploaded files go through the Python backend. In local/mock mode they are saved under data/uploads.
+const UPLOAD_TUNNEL_URL = "/api/uploads";
+</script>

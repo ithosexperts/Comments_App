@@ -1,0 +1,702 @@
+<script>
+window.onload = () => {
+    document.getElementById('app-container').classList.remove('hidden');
+    // Do not require a Comment ID in the URL. The backend derives an internal
+    // stable key from tableName + FMS reference value + App ID + Stage No.
+    // Only a direct launch with neither legacy ID nor form context is invalid.
+    if (!commentId && !(CURRENT_TABLE_NAME && CURRENT_FMS_REF_ID && CURRENT_APP_ID && CURRENT_STAGE_NO)) {
+        return showError("Task context missing. Open this feed from an FMS form or provide tableName, fmsRefId, appId and stageNo.");
+    }
+
+    loadUsersList().then(users => {
+        const senderNameDiv = document.getElementById('sender-name');
+        const currentUser = users.find(u => normalizeEmployeeEmail(u.email) === normalizeEmployeeEmail(CURRENT_USER_EMAIL));
+        if (senderNameDiv) senderNameDiv.textContent = currentUser ? currentUser.name : CURRENT_USER_EMAIL;
+    }).catch(error => {
+        console.error('Failed loading VM_EmployeeMaster users:', error);
+        const senderNameDiv = document.getElementById('sender-name');
+        if (senderNameDiv) senderNameDiv.textContent = (typeof CURRENT_USER_NAME !== "undefined" && CURRENT_USER_NAME) ? CURRENT_USER_NAME : CURRENT_USER_EMAIL;
+    }).finally(() => {
+        // Comments should still load if the employee API is temporarily unavailable.
+        loadComments();
+    });
+    
+    const mainInput = document.getElementById('comment-input');
+    if (mainInput) {
+        mainInput.addEventListener('paste', (e) => {
+            const hasInitialMention = !!mainInput.querySelector('.mention-bubble');
+            if (!hasInitialMention) {
+                e.preventDefault();
+                return;
+            }
+            if (composerState.mode === 'DIFFERENT') {
+                e.preventDefault();
+                return;
+            }
+            handlePaste(e);
+        });
+        
+        mainInput.addEventListener('input', () => {
+             syncComposerStateWithDOM(mainInput);
+             onInput(mainInput, 'main');
+        });
+        
+        mainInput.addEventListener('keydown', (e) => {
+            handleMentionKeys(e); 
+            const sel = window.getSelection();
+            let isTypingMention = false;
+            if (sel.rangeCount > 0 && sel.getRangeAt(0).startContainer.nodeType === Node.TEXT_NODE) {
+                const range = sel.getRangeAt(0);
+                const text = range.startContainer.textContent.substring(0, range.startOffset);
+                const currentWord = text.split(/[\s\u00A0]+/).pop(); 
+                if (currentWord && currentWord.startsWith('@')) isTypingMention = true;
+            }
+
+            if (e.key.length > 1 || e.key === '@' || e.ctrlKey || e.metaKey || e.altKey) return;
+            const hasInitialMention = !!mainInput.querySelector('.mention-bubble');
+            if (!hasInitialMention && !isTypingMention) { e.preventDefault(); return; }
+            if (composerState && composerState.mode === 'DIFFERENT' && !isTypingMention) { e.preventDefault(); return; }
+        });
+
+        mainInput.addEventListener('focus', () => setActiveMentionContext(mainInput, document.getElementById('main-mention-dropdown')));
+        
+        document.getElementById('attach-button').onclick = () => document.getElementById('file-input').click();
+        document.getElementById('camera-button').onclick = () => document.getElementById('camera-input').click();
+        document.getElementById('mention-button').onclick = () => {
+            if (mainInput.textContent.trim().length === 0) {
+               insertAtCursor(mainInput, '@');
+               setTimeout(() => onInput(mainInput, 'main'), 10);
+            }
+        };
+        
+        document.getElementById('emoji-button').onclick = () => { mainInput.focus(); toggleEmojiPicker(); };
+        document.getElementById('send-button').onclick = sendHandler;
+
+        document.getElementById('main-format-toolbar').addEventListener('click', (e) => {
+            const button = e.target.closest('button');
+            if (button && button.dataset.command) {
+               mainInput.focus();
+               applyFormat(button.dataset.command);
+            }
+        });
+        
+        const audioButton = document.getElementById('audio-button');
+        audioButton.addEventListener('mousedown', startWhatsAppStyleRecording);
+        audioButton.addEventListener('touchstart', startWhatsAppStyleRecording, { passive: false });
+        audioButton.addEventListener('mouseup', stopWhatsAppStyleRecording);
+        audioButton.addEventListener('mouseleave', stopWhatsAppStyleRecording);
+        audioButton.addEventListener('touchend', stopWhatsAppStyleRecording);
+        
+        populateEmojiPicker();
+        onInput(mainInput, 'main');
+    }
+
+    document.getElementById('file-input').onchange = handleFileSelect;
+    document.getElementById('camera-input').onchange = handleFileSelect;
+    document.getElementById('close-error-modal').onclick = () => document.getElementById('error-modal').classList.add('hidden');
+    
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.mention-dropdown') && !e.target.closest('[contenteditable="true"]')) {
+         if(mentionState.dropdownEl) mentionState.dropdownEl.classList.add('hidden');
+      }
+      if (!e.target.closest('#emoji-picker') && !e.target.closest('button[title="Add emoji"]')) {
+         document.getElementById('emoji-picker').classList.add('hidden');
+      }
+    });
+};
+
+function syncComposerStateWithDOM(inputEl) {
+    const bubbles = inputEl.querySelectorAll('.mention-bubble');
+    const currentEmails = Array.from(bubbles).map(b => b.getAttribute('data-email'));
+    const validRecipients = composerState.recipients.filter(r => currentEmails.includes(r.email));
+    if (validRecipients.length !== composerState.recipients.length) {
+        composerState.recipients = validRecipients;
+        renderDynamicComposerUI();
+    }
+}
+
+function renderDynamicComposerUI() {
+    const container = document.getElementById('dynamic-type-area');
+    if (!container) return;
+
+    if (!composerState.isUserSelected) {
+        composerState.globalType = null;
+        composerState.recipients.forEach(r => r.type = null);
+    }
+
+    if (composerState.recipients.length === 0) {
+        container.classList.add('hidden');
+        container.innerHTML = '';
+        return;
+    }
+
+    container.classList.remove('hidden');
+    container.innerHTML = '';
+    
+    if (composerState.recipients.length === 1) {
+        const user = composerState.recipients[0];
+        container.innerHTML = `
+            <div class="flex items-center gap-3 animate-pulse-once">
+                <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">For ${user.name.split(' ')[0]}:</span>
+                <button onclick="setGlobalType('Ask')" class="type-bubble ${composerState.globalType === 'Ask' ? 'selected-ask' : 'bg-gray-100 text-gray-500'}"><i class="fas fa-question-circle"></i> Ask</button>
+                <button onclick="setGlobalType('Message')" class="type-bubble ${composerState.globalType === 'Message' ? 'selected-msg' : 'bg-gray-100 text-gray-500'}"><i class="fas fa-comment-alt"></i> Message</button>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="flex flex-col gap-2">
+            <div class="flex items-center justify-between border-b pb-2 mb-1">
+                 <span class="text-xs font-bold text-gray-500 uppercase">Recipients (${composerState.recipients.length})</span>
+                 <div class="flex bg-gray-100 rounded-lg p-1">
+                     <button onclick="setComposerMode('SAME')" class="px-3 py-1 text-xs rounded-md font-semibold transition-colors ${composerState.mode === 'SAME' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}">Same</button>
+                     <button onclick="setComposerMode('DIFFERENT')" class="px-3 py-1 text-xs rounded-md font-semibold transition-colors ${composerState.mode === 'DIFFERENT' ? 'bg-white shadow text-purple-600' : 'text-gray-500'}">Different</button>
+                 </div>
+            </div>
+            ${renderMultiUserContent()}
+        </div>
+    `;
+}
+
+function renderMultiUserContent() {
+    if (composerState.mode === 'SAME') {
+        return `
+            <div class="flex items-center gap-3 justify-center py-2">
+                <span class="text-xs text-gray-400">Action for all:</span>
+                <button onclick="setGlobalType('Ask')" class="type-bubble ${composerState.globalType === 'Ask' ? 'selected-ask' : 'bg-gray-100 text-gray-500'}">Ask All</button>
+                <button onclick="setGlobalType('Message')" class="type-bubble ${composerState.globalType === 'Message' ? 'selected-msg' : 'bg-gray-100 text-gray-500'}">Message All</button>
+            </div>
+        `;
+    } else {
+        return composerState.recipients.map((r, idx) => `
+            <div class="mini-composer-card">
+                <div class="flex justify-between items-center mb-1">
+                    <span class="font-bold text-sm text-gray-700">@${r.name}</span>
+                    <div class="flex gap-1">
+                        <button onclick="setUserType(${idx}, 'Ask')" class="px-2 py-0.5 text-xs rounded-full border ${r.type === 'Ask' ? 'bg-green-100 text-green-700 border-green-200' : 'bg-gray-50 border-gray-200'}">Ask</button>
+                        <button onclick="setUserType(${idx}, 'Message')" class="px-2 py-0.5 text-xs rounded-full border ${r.type === 'Message' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-gray-50 border-gray-200'}">Msg</button>
+                    </div>
+                 </div>
+                <textarea oninput="setUserText(${idx}, this.value)" placeholder="Custom message for ${r.name.split(' ')[0]}..." class="mini-input" rows="1">${r.customText || ''}</textarea>
+            </div>
+        `).join('');
+    }
+}
+
+function setGlobalType(type) {
+    composerState.globalType = type;
+    composerState.recipients.forEach(r => r.type = type);
+    composerState.isUserSelected = true;
+    renderDynamicComposerUI();
+    onInput(document.getElementById('comment-input'), 'main');
+}
+
+function setComposerMode(mode) {
+    composerState.mode = mode;
+    renderDynamicComposerUI();
+}
+
+function setUserType(idx, type) {
+    if(composerState.recipients[idx]) {
+        composerState.recipients[idx].type = type;
+        composerState.isUserSelected = true; 
+        renderDynamicComposerUI();
+        onInput(document.getElementById('comment-input'), 'main');
+    }
+}
+function setUserText(idx, text) {
+    if(composerState.recipients[idx]) {
+        composerState.recipients[idx].customText = text;
+        onInput(document.getElementById('comment-input'), 'main');
+    }
+}
+
+function onInput(inputEl, contextId) {
+    if (!inputEl) return;
+    const text = inputEl.textContent;
+    const isMain = (contextId === 'main');
+    const hasAttachment = (isMain && typeof fileData !== 'undefined' && fileData) || (!isMain && typeof replyState !== 'undefined' && replyState[contextId] && replyState[contextId].fileData);
+    const bubbles = inputEl.querySelectorAll('.mention-bubble');
+    const hasInitialMention = bubbles.length > 0;
+    const isTypingMention = (text.match(/@/g) || []).length > bubbles.length;
+
+    let hasCustomText = false;
+    if (isMain) {
+        if (typeof composerState !== 'undefined' && composerState.mode === 'DIFFERENT') {
+            hasCustomText = composerState.recipients.some(r => r.customText && r.customText.trim().length > 0);
+        }
+    } else {
+        const state = replyComposerStates[contextId];
+        if (state && state.mode === 'DIFFERENT') {
+            hasCustomText = state.recipients.some(r => r.customText && r.customText.trim().length > 0);
+        }
+    }
+
+    let sendEnabled = false;
+    if (!isTypingMention) {
+        const clonedEl = inputEl.cloneNode(true);
+        clonedEl.querySelectorAll('.mention-bubble').forEach(b => b.remove());
+        const hasContent = clonedEl.textContent.trim().length > 0 || hasAttachment || hasCustomText;
+        if (hasContent) {
+            let typeSelected = false;
+            if (isMain) {
+                if (typeof composerState !== 'undefined') {
+                    if (composerState.mode === 'SAME') {
+                        typeSelected = !!composerState.globalType;
+                    } else {
+                        typeSelected = composerState.recipients.length > 0 && composerState.recipients.every(r => r.type);
+                    }
+                }
+            } else {
+                const state = replyComposerStates[contextId];
+                if (!state || state.mode === 'SAME') {
+                    const val = document.getElementById(`reply-type-val-${contextId}`)?.value;
+                    typeSelected = !!val; 
+                } else {
+                    typeSelected = state.recipients.length > 0 && state.recipients.every(r => r.type);
+                }
+            }
+            if (typeSelected) sendEnabled = true;
+        }
+    }
+
+    const sendButtonId = isMain ? 'send-button' : `reply-send-button-${contextId}`;
+    const sendButton = document.getElementById(sendButtonId);
+    if (sendButton) sendButton.disabled = !sendEnabled;
+
+    const controlsDisabled = !hasInitialMention || isTypingMention;
+    setComposerButtonsDisabled(contextId, controlsDisabled);
+    if (contextId !== 'main' && hasInitialMention) syncReplyComposerState(inputEl, contextId);
+
+    if (text.trim() === '@') {
+        setActiveMentionContext(inputEl, document.getElementById(isMain ? 'main-mention-dropdown' : `reply-mention-dropdown-${contextId}`));
+        showMentionDropdown(usersList);
+    } else {
+        handleMentions(inputEl);
+    }
+    if (contextId !== 'main') showReplyFilePreview(contextId);
+}
+
+let replyComposerStates = {};
+function syncReplyComposerState(inputEl, askId) {
+    if (!replyComposerStates[askId]) replyComposerStates[askId] = { mode: 'SAME', recipients: [], isUserSelected: false };
+
+    const bubbles = inputEl.querySelectorAll('.mention-bubble');
+    const currentEmails = Array.from(bubbles).map(b => b.getAttribute('data-email'));
+    const existingRecipients = replyComposerStates[askId].recipients;
+    let isChanged = false;
+
+    const newRecipients = currentEmails.map(email => {
+        const existing = existingRecipients.find(r => r.email === email);
+        if (existing) return existing; 
+        isChanged = true; 
+        const bNode = Array.from(bubbles).find(b => b.getAttribute('data-email') === email);
+        return { name: bNode ? bNode.textContent.replace('@', '') : 'User', email: email, type: null, customText: '' };
+    });
+
+    if (newRecipients.length !== existingRecipients.length) isChanged = true;
+    replyComposerStates[askId].recipients = newRecipients;
+
+    if (isChanged) renderReplyDynamicUI(askId);
+}
+
+function renderReplyDynamicUI(askId) {
+  const state = replyComposerStates[askId];
+  const container = document.getElementById(`reply-type-area-${askId}`);
+  if (!container || state.recipients.length <= 1) return;
+  
+  if (!state.isUserSelected) state.recipients.forEach(r => r.type = null);
+
+  let html = `<div class="w-full flex flex-col gap-3 border-t pt-3 mt-2 bg-gray-50/50 p-2 rounded-lg">
+    <div class="flex items-center justify-between px-1">
+      <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Multi-Recipient Mode</span>
+      <div class="flex bg-gray-200 rounded-lg p-1 scale-90">
+        <button onclick="setReplyMode('${askId}','SAME')" class="px-4 py-1 text-xs rounded-md font-bold transition-all ${state.mode==='SAME'?'bg-white shadow text-blue-600':'text-gray-500'}">Same</button>
+        <button onclick="setReplyMode('${askId}','DIFFERENT')" class="px-4 py-1 text-xs rounded-md font-bold transition-all ${state.mode==='DIFFERENT'?'bg-white shadow text-purple-600':'text-gray-500'}">Different</button>
+      </div>
+    </div>`;
+    
+  if (state.mode === 'SAME') {
+    const currentVal = document.getElementById(`reply-type-val-${askId}`)?.value || '';
+    html += `<div class="flex gap-4 justify-center py-1">
+      <button onclick="setReplyActionType('${askId}','Reply')" id="btn-reply-${askId}" class="type-bubble ${currentVal==='Reply'?'selected-msg':'bg-white text-gray-500 border-gray-200'}"><i class="fas fa-reply mr-1"></i> Reply All</button>
+      <button onclick="setReplyActionType('${askId}','Ask')" id="btn-ask-${askId}" class="type-bubble ${currentVal==='Ask'?'selected-ask':'bg-white text-gray-500 border-gray-200'}"><i class="fas fa-question-circle mr-1"></i> New Ask All</button>
+      <input type="hidden" id="reply-type-val-${askId}" value="${currentVal}">
+    </div>`;
+  } else {
+    html += state.recipients.map((r,idx) => `
+      <div class="bg-white border border-gray-200 rounded-lg p-3 shadow-sm">
+        <div class="flex justify-between items-center mb-2">
+          <span class="font-bold text-sm text-blue-600">@${r.name}</span>
+          <div class="flex gap-2 scale-90 origin-right">
+            <button onclick="setReplyUserType('${askId}',${idx},'Reply')" class="type-bubble py-1 px-3 ${r.type==='Reply'?'selected-msg':'bg-gray-50 text-gray-400'}">Reply</button>
+            <button onclick="setReplyUserType('${askId}',${idx},'Ask')" class="type-bubble py-1 px-3 ${r.type==='Ask'?'selected-ask':'bg-gray-50 text-gray-400'}">New Ask</button>
+          </div>
+        </div>
+        <textarea oninput="setReplyUserText('${askId}',${idx},this.value)" onkeydown="event.stopPropagation()" class="w-full p-2 text-sm border border-gray-100 rounded focus:border-blue-300 focus:outline-none bg-gray-50 focus:bg-white transition-colors text-black" style="color:black!important" placeholder="Message for ${r.name}..." rows="1">${r.customText||''}</textarea>
+      </div>`).join('');
+  }
+  container.innerHTML = html + `</div>`;
+}
+
+function setComposerButtonsDisabled(contextId, isDisabled) {
+    const composerId = contextId === 'main' ? 'composer-area' : `reply-composer-${contextId}`;
+    const composer = document.getElementById(composerId);
+    if (!composer) return;
+    
+    const allControlButtons = composer.querySelectorAll('button:not(#mention-button):not([id*="send-button"])');
+    
+    allControlButtons.forEach(btn => {
+        const isReplyBox = contextId !== 'main';
+        // FIX: Added safe check for btn.id to prevent errors on buttons without IDs
+        const isAttachmentButton = btn.id && (btn.id.includes('attach-button') || btn.id.includes('camera-button') || btn.id.includes('audio-button'));
+        
+        if (isReplyBox && isAttachmentButton) btn.disabled = false;
+        else btn.disabled = isDisabled;
+    });
+}
+function sendHandler() {
+    const inputEl = document.getElementById('comment-input');
+    if (typeof activateComposer === 'function') activateComposer();
+    if (typeof syncComposerStateWithDOM === 'function') syncComposerStateWithDOM(inputEl);
+
+    const { textForSheet, mentionedEmails } = getSubmissionData(inputEl);
+    const recipientsSnapshot = (composerState && Array.isArray(composerState.recipients)) ? composerState.recipients.map(r => ({ ...r, email: (r.email || '').toString().trim() })) : [];
+    const isDifferentMode = composerState && composerState.mode && composerState.mode.toUpperCase() === 'DIFFERENT';
+    const hasAttachment = typeof fileData !== 'undefined' && fileData;
+    
+    if (!textForSheet.trim() && recipientsSnapshot.length === 0 && !hasAttachment) { alert("No text, no attachment, and no recipients found."); return; }
+    showLoader();
+
+    const baseData = {
+        commentId: (typeof commentId !== 'undefined' ? commentId : '').toString().trim(),
+        taskId: document.getElementById('task-id') ? document.getElementById('task-id').textContent.trim() : '',
+        stageName: document.querySelector('.px-3.py-1') ? document.querySelector('.px-3.py-1').textContent.trim() : '',
+        fmsName: document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : '',
+        tableName: CURRENT_TABLE_NAME, fmsRefId: CURRENT_FMS_REF_ID, appId: CURRENT_APP_ID, appName: CURRENT_APP_NAME || (document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : ''), stageNo: CURRENT_STAGE_NO,
+        sender: (typeof CURRENT_USER_EMAIL !== 'undefined') ? CURRENT_USER_EMAIL : ''
+    };
+
+    const cloneForPureText = inputEl.cloneNode(true);
+    cloneForPureText.querySelectorAll('.mention-bubble').forEach(b => b.remove());
+    const pureText = (cloneForPureText.innerText || cloneForPureText.textContent).trim();
+    let finalPayload;
+    
+    if (isDifferentMode && recipientsSnapshot.length > 0) {
+        finalPayload = recipientsSnapshot.map(recipient => {
+            let specificType = recipient.type || 'Message';
+            const askBtn = document.querySelector(`.selected-ask[data-email="${recipient.email}"]`);
+            const msgBtn = document.querySelector(`.selected-msg[data-email="${recipient.email}"]`);
+            if (askBtn) specificType = 'Ask';
+            if (msgBtn) specificType = 'Message';
+            let specificText = `@${recipient.name} ${pureText}`;
+            if (recipient.customText && recipient.customText.trim() !== '') specificText = `@${recipient.name} ${recipient.customText.trim()}`;
+            return { ...baseData, text: specificText, receiver: recipient.email, mentionType: specificType, parentAskId: '' };
+        });
+    } else {
+        if (recipientsSnapshot.length > 0) {
+            finalPayload = recipientsSnapshot.map(recipient => {
+                let specificText = `@${recipient.name} ${pureText}`;
+                return { ...baseData, text: specificText, receiver: recipient.email, mentionType: composerState.globalType || 'Message', parentAskId: '' };
+            });
+        } else {
+            let finalReceivers = (mentionedEmails || []).join(',');
+            if (!finalReceivers) {
+                const managerEl = document.getElementById('manager-email');
+                finalReceivers = managerEl ? managerEl.textContent.trim() : '';
+            }
+            finalPayload = { ...baseData, text: textForSheet, receiver: finalReceivers, mentionType: composerState.globalType || 'Message', parentAskId: '' };
+        }
+    }
+
+    function sendToBackend(payloadToSave) {
+        google.script.run
+            .withSuccessHandler(function (res) {
+                loadComments();
+                if (typeof resetMainComposer === 'function') resetMainComposer();
+                else { inputEl.innerText = ''; if (composerState) composerState.recipients = []; }
+                hideLoader();
+            })
+            .withFailureHandler(function (err) {
+                hideLoader();
+                if (err && err.message) alert("Server Error:\n" + err.message);
+                else alert("Execution failed. Check Apps Script > Executions.");
+                document.getElementById('send-button').disabled = false;
+            })
+            .addNewComment(payloadToSave);
+    }
+
+    if (hasAttachment) {
+        const reader = new FileReader();
+        reader.readAsDataURL(fileData);
+        reader.onload = async function() {
+            const base64Data = reader.result.split(',')[1];
+            const uploadPayload = { base64: base64Data, name: fileData.name, mime: fileData.type };
+            try {
+                const response = await fetch(UPLOAD_TUNNEL_URL, { method: 'POST', body: JSON.stringify(uploadPayload) });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    if (Array.isArray(finalPayload)) {
+                        finalPayload.forEach(item => { item.attachmentUrl = result.url; item.attachmentFileName = fileData.name; });
+                    } else {
+                        finalPayload.attachmentUrl = result.url; finalPayload.attachmentFileName = fileData.name;
+                    }
+                    sendToBackend(finalPayload);
+                } else {
+                    alert("Upload Failed: " + result.message); hideLoader(); document.getElementById('send-button').disabled = false;
+                }
+            } catch (err) { alert("Network Error: " + err.message); hideLoader(); document.getElementById('send-button').disabled = false; }
+        };
+    } else {
+        sendToBackend(finalPayload);
+    }
+}
+
+function sendReplyHandler(askId) {
+    if (!askId) { alert("Parent Ask ID missing."); return; }
+    const cleanAskId = String(askId).replace(/["'\s]/g, '').trim();
+    const inputEl = document.getElementById(`reply-input-${askId}`);
+    if (!inputEl) { alert("Reply input not found."); return; }
+
+    if (typeof syncReplyComposerState === 'function') syncReplyComposerState(inputEl, askId);
+    const { textForSheet, mentionedEmails } = getSubmissionData(inputEl);
+    const state = replyComposerStates[askId] || { mode: 'SAME' };
+    const attachedFile = (typeof replyState !== 'undefined' && replyState[askId]) ? replyState[askId].fileData : null;
+
+    if (!textForSheet.trim() && mentionedEmails.length === 0 && !attachedFile) { alert("Empty reply."); return; }
+    showLoader();
+    let parentComment = null;
+
+    if (typeof allComments !== 'undefined' && Array.isArray(allComments)) {
+        parentComment = allComments.find(c => c.askId === cleanAskId || c.uniqueId === cleanAskId || c.id === cleanAskId);
+    }
+    if (!parentComment || !parentComment.threadId) { hideLoader(); alert("Thread information missing. Cannot inherit thread."); return; }
+
+    const inheritedThreadId = parentComment.threadId;
+    const inheritedColor = parentComment.threadColor || '';
+
+    const baseData = {
+        commentId: typeof commentId !== 'undefined' ? commentId : '',
+        taskId: document.getElementById('task-id') ? document.getElementById('task-id').textContent.trim() : '',
+        stageName: document.querySelector('.px-3.py-1') ? document.querySelector('.px-3.py-1').textContent.trim() : '',
+        fmsName: document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : '',
+        tableName: CURRENT_TABLE_NAME, fmsRefId: CURRENT_FMS_REF_ID, appId: CURRENT_APP_ID, appName: CURRENT_APP_NAME || (document.querySelector('h1') ? document.querySelector('h1').textContent.trim() : ''), stageNo: CURRENT_STAGE_NO,
+        sender: typeof CURRENT_USER_EMAIL !== 'undefined' ? CURRENT_USER_EMAIL : '',
+        parentAskId: cleanAskId, threadId: inheritedThreadId, threadColor: inheritedColor
+    };
+    
+    const cloneForPureText = inputEl.cloneNode(true);
+    cloneForPureText.querySelectorAll('.mention-bubble').forEach(b => b.remove());
+    const pureText = (cloneForPureText.innerText || cloneForPureText.textContent).trim();
+    let payloadArray = [];
+    
+    if (state.mode === 'DIFFERENT' && state.recipients.length > 0) {
+        payloadArray = state.recipients.map(r => {
+            let specificText = `@${r.name} ${pureText}`;
+            if (r.customText && r.customText.trim() !== '') specificText = `@${r.name} ${r.customText.trim()}`;
+            return { ...baseData, text: specificText, receiver: r.email, mentionType: r.type || 'Reply' };
+        });
+    } else {
+        const typeVal = document.getElementById(`reply-type-val-${askId}`);
+        const mentionTypeToUse = typeVal ? typeVal.value : 'Reply';
+        if (state.recipients && state.recipients.length > 0) {
+            payloadArray = state.recipients.map(r => {
+                let specificText = `@${r.name} ${pureText}`;
+                return { ...baseData, text: specificText, receiver: r.email, mentionType: mentionTypeToUse };
+            });
+        } else {
+            payloadArray = [{ ...baseData, text: textForSheet, receiver: mentionedEmails.join(','), mentionType: mentionTypeToUse }];
+        }
+    }
+
+    if (attachedFile) {
+        const reader = new FileReader();
+        reader.readAsDataURL(attachedFile);
+        reader.onload = async function() {
+            const base64Data = reader.result.split(',')[1];
+            const uploadPayload = { base64: base64Data, name: attachedFile.name, mime: attachedFile.type };
+            try {
+                const response = await fetch(UPLOAD_TUNNEL_URL, { method: 'POST', body: JSON.stringify(uploadPayload) });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    payloadArray.forEach(item => { item.attachmentUrl = result.url; item.attachmentFileName = attachedFile.name; });
+                    processReplySequentially(payloadArray, 0, cleanAskId);
+                } else {
+                    alert("Upload Failed: " + result.message); hideLoader(); document.getElementById(`reply-send-button-${askId}`).disabled = false;
+                }
+            } catch (err) { alert("Network Error: " + err.message); hideLoader(); document.getElementById(`reply-send-button-${askId}`).disabled = false; }
+        };
+    } else {
+        processReplySequentially(payloadArray, 0, cleanAskId);
+    }
+}
+
+function processReplySequentially(payloads, index, askId) {
+    if (index >= payloads.length) {
+        loadComments(); hideLoader(); toggleReplyBox(askId); 
+        if (typeof resetReplyFile === 'function') resetReplyFile(askId);
+        return;
+    }
+    google.script.run
+        .withSuccessHandler(() => { processReplySequentially(payloads, index + 1, askId); })
+        .withFailureHandler(err => {
+            console.error("Failed at index " + index, err); hideLoader();
+            alert("Backend Error: " + (err ? err.message : "Unknown") + "\nReceiver: " + payloads[index].receiver);
+        })
+        .addNewComment(payloads[index]);
+}
+
+function setReplyMode(askId, mode) { replyComposerStates[askId].mode = mode; renderReplyDynamicUI(askId); }
+function setReplyUserType(askId, idx, type) {
+    if (replyComposerStates[askId] && replyComposerStates[askId].recipients[idx]) {
+        replyComposerStates[askId].recipients[idx].type = type;
+        replyComposerStates[askId].isUserSelected = true;
+        renderReplyDynamicUI(askId);
+        onInput(document.getElementById(`reply-input-${askId}`), askId);
+    }
+}
+function setReplyUserText(askId, idx, val) { 
+    if (replyComposerStates[askId] && replyComposerStates[askId].recipients[idx]) {
+        replyComposerStates[askId].recipients[idx].customText = val;
+        onInput(document.getElementById(`reply-input-${askId}`), askId);
+    }
+}
+
+function getSubmissionData(inputEl) {
+    const bubbles = inputEl.querySelectorAll('.mention-bubble');
+    const mentionedEmails = [];
+    bubbles.forEach(b => mentionedEmails.push(b.getAttribute('data-email')));
+    const clone = inputEl.cloneNode(true);
+    clone.querySelectorAll('.mention-bubble').forEach(b => b.replaceWith(b.textContent));
+    let textForSheet = clone.innerText || clone.textContent;
+    return { textForSheet, mentionedEmails };
+}
+
+function toggleReplyBox(uniqueId, parentAskId) {
+    const askId = parentAskId || uniqueId; 
+    const composerContainer = document.getElementById(`reply-composer-${askId}`);
+    const replyButton = document.getElementById(`reply-button-${askId}`);
+    if (!composerContainer) return;
+
+    if (composerContainer.classList.contains('hidden')) {
+        if (!composerContainer.innerHTML) {
+            composerContainer.innerHTML = createReplyComposer(askId);
+            attachReplyComposerListeners(askId);
+        }
+        composerContainer.classList.remove('hidden');
+        if(replyButton) replyButton.textContent = 'Close';
+        setTimeout(() => {
+            const replyInput = document.getElementById(`reply-input-${askId}`);
+            if(replyInput) { replyInput.focus(); onInput(replyInput, askId); }
+        }, 50);
+    } else {
+        composerContainer.classList.add('hidden');
+        if(replyButton) replyButton.textContent = 'Reply';
+    }
+}
+
+function setReplyActionType(askId, type) {
+    const hiddenInput = document.getElementById(`reply-type-val-${askId}`);
+    if (hiddenInput) hiddenInput.value = type;
+    if (replyComposerStates[askId]) replyComposerStates[askId].isUserSelected = true;
+    
+    const btnReply = document.getElementById(`btn-reply-${askId}`);
+    const btnAsk = document.getElementById(`btn-ask-${askId}`);
+    if (type === 'Reply') {
+        if(btnReply) btnReply.className = 'type-bubble selected-msg';
+        if(btnAsk) btnAsk.className = 'type-bubble bg-gray-100 text-gray-500';
+    } else {
+        if(btnAsk) btnAsk.className = 'type-bubble selected-ask';
+        if(btnReply) btnReply.className = 'type-bubble bg-gray-100 text-gray-500';
+    }
+    onInput(document.getElementById(`reply-input-${askId}`), askId);
+}
+
+function handleReplyKeydown(e, askId) {
+    const inputEl = document.getElementById(`reply-input-${askId}`);
+    const sel = window.getSelection();
+    let isTypingMention = false;
+    if (sel.rangeCount > 0 && sel.getRangeAt(0).startContainer.nodeType === Node.TEXT_NODE) {
+        const range = sel.getRangeAt(0);
+        const text = range.startContainer.textContent.substring(0, range.startOffset);
+        const currentWord = text.split(/[\s\u00A0]+/).pop();
+        if (currentWord && currentWord.startsWith('@')) isTypingMention = true;
+    }
+
+    if (e.key.length > 1 || e.key === '@' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const hasInitialMention = !!inputEl.querySelector('.mention-bubble');
+    const state = replyComposerStates[askId];
+    
+    if (!hasInitialMention && !isTypingMention) { e.preventDefault(); return; }
+    if (state && state.mode === 'DIFFERENT' && !isTypingMention) { e.preventDefault(); return; }
+}
+
+function attachReplyComposerListeners(askId) {
+    const replyInput = document.getElementById(`reply-input-${askId}`);
+    const dropdown = document.getElementById(`reply-mention-dropdown-${askId}`);
+
+    replyInput.addEventListener('input', () => onInput(replyInput, askId));
+    replyInput.addEventListener('focus', () => setActiveMentionContext(replyInput, dropdown));
+    
+    replyInput.addEventListener('paste', (e) => {
+        const hasInitialMention = !!replyInput.querySelector('.mention-bubble');
+        const state = replyComposerStates[askId];
+        
+        if (!hasInitialMention) { e.preventDefault(); return; }
+        if (state && state.mode === 'DIFFERENT') { e.preventDefault(); return; }
+        handlePaste(e);
+    });
+    
+    replyInput.addEventListener('keydown', (e) => { handleMentionKeys(e); handleReplyKeydown(e, askId); });
+    
+    const toolbar = document.getElementById(`reply-format-toolbar-${askId}`);
+    if (toolbar) {
+        toolbar.onclick = (e) => {
+            const btn = e.target.closest('button');
+            if (btn && btn.dataset.command) { replyInput.focus(); applyFormat(btn.dataset.command); }
+        };
+    }
+
+    document.getElementById(`reply-attach-button-${askId}`).onclick = () => handleReplyFileSelect(askId, 'file');
+    document.getElementById(`reply-camera-button-${askId}`).onclick = () => handleReplyFileSelect(askId, 'camera');
+    
+    const audioBtn = document.getElementById(`reply-audio-button-${askId}`);
+    audioBtn.addEventListener('mousedown', (e) => startReplyRecording(e, askId));
+    audioBtn.addEventListener('mouseup', () => stopReplyRecording(askId));
+    audioBtn.addEventListener('mouseleave', () => stopReplyRecording(askId)); 
+    audioBtn.addEventListener('touchstart', (e) => startReplyRecording(e, askId), { passive: false });
+    audioBtn.addEventListener('touchend', () => stopReplyRecording(askId));
+    
+    document.getElementById(`reply-emoji-button-${askId}`).onclick = () => showReplyEmojiPicker(askId);
+    document.getElementById(`reply-send-button-${askId}`).onclick = () => sendReplyHandler(askId);
+}
+
+function showReplyEmojiPicker(askId) {
+    const picker = document.getElementById('emoji-picker');
+    const replyBtn = document.getElementById(`reply-emoji-button-${askId}`);
+    const inputEl = document.getElementById(`reply-input-${askId}`);
+    if (!picker.classList.contains('hidden') && mentionState.inputEl === inputEl) {
+        picker.classList.add('hidden'); return;
+    }
+    picker.classList.remove('hidden');
+    const rect = replyBtn.getBoundingClientRect();
+    const pickerHeight = picker.offsetHeight || 160; 
+    picker.style.position = 'fixed';
+    picker.style.left = rect.left + 'px';
+    picker.style.top = (rect.top - pickerHeight - 5) + 'px';
+    picker.style.bottom = 'auto'; 
+    picker.style.right = 'auto';
+    mentionState.inputEl = inputEl;
+}
+
+function resetMainComposer() {
+    resetFile();
+    const ci = document.getElementById('comment-input');
+    ci.innerHTML='';
+    composerState = { recipients: [], mode: 'SAME', globalType: null, isUserSelected: false };
+    renderDynamicComposerUI();
+    onInput(ci, 'main');
+    document.getElementById('new-thread-overlay').style.display = 'flex';
+}
+</script>
