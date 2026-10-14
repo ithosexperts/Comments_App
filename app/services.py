@@ -256,40 +256,81 @@ class ActivityService:
                 return name
         return ""
 
-    def get_form_context(self, table_name: str, fms_ref_id: str, app_id: str, stage_no: str) -> dict[str, Any]:
-        """Resolve the reference column from FMS_Comment_FMS_Stage_Map, then fetch the form row.
+    def get_form_context(
+        self, table_name: str, fms_ref_id: str, app_id: str, stage_no: str,
+        *, row_id: str = "", primary_key: str = "", task_id: str = "",
+    ) -> dict[str, Any]:
+        """Resolve the mapped reference value and fetch the corresponding FMS row.
 
-        URL fmsRefId is the *record value* (for example 8). The mapping table's
-        [FMS Ref Id] column stores the *source column name* (for example Pick ID).
+        `fms_ref_id` is normally the current value of the reference column listed
+        in FMS_Comment_FMS_Stage_Map. When the portal only has the row primary key,
+        `row_id` + `primary_key` lets us resolve that mapped value safely first.
         """
         table_name = str(table_name or "").strip()
         fms_ref_id = str(fms_ref_id or "").strip()
         app_id = str(app_id or "").strip()
         stage_no = str(stage_no or "").strip()
+        row_id = str(row_id or "").strip()
+        primary_key = str(primary_key or "").strip()
+        task_id = str(task_id or "").strip()
         if not all((table_name, fms_ref_id, app_id, stage_no)):
             raise ValueError("TableName, FMS reference value, App ID and Stage No are required")
 
-        # Use the exact mapping-table headers. TableName has no space; the other
-        # mapping columns are named "FMS Ref Id", "App ID", and "Stage No".
-        map_rows = self.db.select(
-            self.settings.stage_map_table,
-            {"TableName": table_name, "App ID": app_id, "Stage No": stage_no},
-        )
+        # FMS routes can label stages as S4 while a mapping table stores 4 (or
+        # vice versa). Resolve either spelling, then retain the mapping's stored
+        # value so both entry paths produce the same stable conversation key.
+        stage_candidates = [stage_no]
+        stage_match = re.fullmatch(r"S0*(\d+)", stage_no, flags=re.IGNORECASE)
+        if stage_match:
+            normalized_stage = str(int(stage_match.group(1)))
+            if normalized_stage not in stage_candidates:
+                stage_candidates.append(normalized_stage)
+        elif stage_no.isdigit():
+            normalized_stage = "S" + str(int(stage_no))
+            if normalized_stage not in stage_candidates:
+                stage_candidates.append(normalized_stage)
+
+        map_rows: list[dict[str, Any]] = []
+        for stage_candidate in stage_candidates:
+            map_rows = self.db.select(
+                self.settings.stage_map_table,
+                {"TableName": table_name, "App ID": app_id, "Stage No": stage_candidate},
+            )
+            if map_rows:
+                stage_no = str(_get(map_rows[0], "Stage No", "StageNo", default=stage_candidate) or stage_candidate).strip()
+                break
+
         form_row: dict[str, Any] = {}
         chosen_mapping: dict[str, Any] = {}
-        # Multiple mapping rows are tolerated; try each configured reference column
-        # until the URL's value resolves a row in the target FMS table.
+
+        # First support the canonical deep link, where fmsRefId is already the
+        # configured mapped-column value.
         for candidate in map_rows:
-            source_column = str(_get(candidate, "FMS Ref Id", default="") or "").strip()
+            source_column = str(_get(candidate, "FMS Ref Id", "FMSRefId", default="") or "").strip()
             if not source_column:
                 continue
-            # Preserve spaces: the actual form table may have a column named "Pick ID".
-            # The SQL API must receive that exact field name, not "PickID".
             candidate_rows = self.db.select(table_name, {source_column: fms_ref_id})
             if candidate_rows:
                 form_row = candidate_rows[0]
                 chosen_mapping = candidate
                 break
+
+        # FMS portal knows its physical row primary key, but a Comments mapping
+        # may use another column (for example Pick ID). Resolve the same row by
+        # primary key and then use the configured reference-column value as the
+        # canonical conversation key and stored FMSRefId.
+        if not form_row and row_id and primary_key:
+            fallback_rows = self.db.select(table_name, {primary_key: row_id})
+            if fallback_rows:
+                form_row = fallback_rows[0]
+                for candidate in map_rows:
+                    source_column = str(_get(candidate, "FMS Ref Id", "FMSRefId", default="") or "").strip()
+                    reference_value = _get(form_row, source_column, default=None) if source_column else None
+                    if reference_value not in (None, "") and str(reference_value).strip().lower() not in {"none", "null"}:
+                        chosen_mapping = candidate
+                        fms_ref_id = str(reference_value).strip()
+                        break
+
         if not chosen_mapping and len(map_rows) == 1:
             chosen_mapping = map_rows[0]
 
@@ -298,10 +339,12 @@ class ActivityService:
         ) or "").strip()
         if not application_name:
             application_name = self.get_application_name(app_id)
+        actual_task_id = _get(form_row, "TaskID", "Task ID", "TaskId", default="") or task_id or fms_ref_id
         return {
-            "tableName": table_name, "fmsRefId": fms_ref_id, "appId": app_id, "stageNo": stage_no,
+            "tableName": table_name, "fmsRefId": fms_ref_id, "rowId": row_id,
+            "primaryKey": primary_key, "appId": app_id, "stageNo": stage_no,
             "commentId": self.context_comment_id(table_name, fms_ref_id, app_id, stage_no),
-            "taskId": _get(form_row, "TaskID", "Task ID", "TaskId", default=fms_ref_id),
+            "taskId": actual_task_id,
             "stageName": _get(form_row, "StageName", "Stage Name", "Stage", default=stage_no),
             # Display application name, never the physical FMS table name.
             "fmsName": application_name,
