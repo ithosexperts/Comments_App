@@ -145,3 +145,10 @@ def test_embed_widget_requests_ticket_from_portal_not_sender_email(monkeypatch):
     assert "/api/comments/launch-ticket" in response.text
     assert "/auth/launch" in response.text
     assert "localStorage.getItem(\"access_token\")" in response.text
+    # FMS stage forms are nested inside the FMS dashboard iframe; the bridge is
+    # on top-level One Portal, so the launcher must message window.top, not parent.
+    assert "const portalWindow=window.top" in response.text
+    assert "portalWindow.postMessage" in response.text
+    assert "event.source!==portalWindow" in response.text
+    assert "window.parent.postMessage" not in response.text
+    assert "no-store, no-cache, must-revalidate" in response.headers["cache-control"]
