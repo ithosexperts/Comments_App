@@ -109,7 +109,7 @@ def health():
     return {"ok": True, "app": "Task Activity Feed API", "sql_api_mode": settings.sql_api_mode}
 
 @app.post("/auth/launch")
-async def launch_from_one_portal(request: Request, ticket: str = Form(...)):
+async def launch_from_one_portal(request: Request, ticket: str = Form(...), view: str = Form("full")):
     """Consume a short-lived One Portal ticket, resolve Active employee data, and set an HttpOnly cookie."""
     secret = settings.comments_launch_secret
     if not secret or len(secret) < 32:
@@ -158,11 +158,16 @@ async def launch_from_one_portal(request: Request, ticket: str = Form(...)):
         "fmsRefId": str(context.get("fmsRefId", "") or "").strip(),
         "appId": str(context.get("appId", "") or "").strip(),
         "stageNo": str(context.get("stageNo", "") or "").strip(),
+        "rowId": str(context.get("rowId", "") or "").strip(),
+        "primaryKey": str(context.get("primaryKey", "") or "").strip(),
+        "taskId": str(context.get("taskId", "") or "").strip(),
     }
-    if not all(task_context.values()):
+    if not all(task_context[key] for key in ("tableName", "fmsRefId", "appId", "stageNo")):
         raise HTTPException(status_code=422, detail="Launch ticket has incomplete task context.")
 
-    response = RedirectResponse(url="/?" + urlencode(task_context), status_code=303)
+    # View only controls presentation; task and identity are still from the signed ticket.
+    selected_view = "compact" if str(view or "").strip().lower() == "compact" else "full"
+    response = RedirectResponse(url="/?" + urlencode({key: value for key, value in {**task_context, "view": selected_view}.items() if value != ""}), status_code=303)
     same_site = settings.comments_cookie_samesite if settings.comments_cookie_samesite in {"lax", "strict", "none"} else "lax"
     local_mode = settings.app_env in {"local", "development", "dev"}
     response.set_cookie(
@@ -195,7 +200,9 @@ def who_am_i(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, commentId: str | None = None, tableName: str | None = None,
-         fmsRefId: str | None = None, appId: str | None = None, stageNo: str | None = None):
+         fmsRefId: str | None = None, appId: str | None = None, stageNo: str | None = None,
+         rowId: str | None = None, primaryKey: str | None = None, taskId: str | None = None,
+         view: str = "full"):
     current_identity = get_current_identity(request)
     current_email = str(current_identity.get("email", "") or "").strip()
     if not current_email:
@@ -207,7 +214,10 @@ def home(request: Request, commentId: str | None = None, tableName: str | None =
     try:
         role = activity.get_user_role(current_email)
         if all((tableName, fmsRefId, appId, stageNo)):
-            task_details = activity.get_form_context(tableName, fmsRefId, appId, stageNo)
+            task_details = activity.get_form_context(
+                tableName, fmsRefId, appId, stageNo,
+                row_id=rowId or "", primary_key=primaryKey or "", task_id=taskId or "",
+            )
             commentId = task_details["commentId"]
         elif commentId:
             task_details = activity.get_pending_task_details_by_comment_id(commentId)
@@ -221,7 +231,10 @@ def home(request: Request, commentId: str | None = None, tableName: str | None =
         "comment_id": commentId, "current_user_email": current_email,
         "current_user_name": current_identity.get("full_name", ""),
         "current_employee_code": current_identity.get("employee_code", ""),
-        "current_user_role": role, "taskDetails": task_details,
+        "current_user_role": role,
+        "current_user_role_id": current_identity.get("role_id", ""),
+        "compact_view": str(view or "").strip().lower() == "compact",
+        "taskDetails": task_details,
         "table_name": tableName or (task_details or {}).get("tableName", ""),
         "context_error": context_error,
         "sql_api_mode": settings.sql_api_mode,
@@ -230,16 +243,18 @@ def home(request: Request, commentId: str | None = None, tableName: str | None =
 
 @app.get("/embed.js")
 def embed_widget():
-    """Universal One Portal launcher. It asks the logged-in Portal backend for a short-lived,
-    signed ticket and POSTs that ticket to this app; identity is never sent in the URL.
+    """Inline Comments launcher for FMS forms.
 
-    Same-origin portal pages use their existing localStorage access_token. Cross-origin
-    embedded apps can use the postMessage bridge documented in docs/portal-identity-handoff.md.
+    Inserts the Comments icon beside the Lead Time Extension control when one
+    exists, or in the stage heading for forms without that control. The modal
+    receives a compact view; Open in new tab receives the full task view.
+    Identity is always exchanged using a signed One Portal launch ticket.
     """
     js = r'''(function(){
+ 'use strict';
  const script=document.currentScript, src=new URL(script.src), p=src.searchParams, commentsOrigin=src.origin;
  const read=(param,selectorParam)=>{const selector=p.get(selectorParam);if(selector){const el=document.querySelector(selector);if(el)return String(el.value||el.textContent||el.getAttribute("data-value")||"").trim()}return p.get(param)||""};
- const context=()=>({tableName:read("tableName","tableSelector"),fmsRefId:read("fmsRefId","fmsRefSelector"),appId:read("appId","appSelector"),stageNo:read("stageNo","stageSelector")});
+ const context=()=>({tableName:read("tableName","tableSelector"),fmsRefId:read("fmsRefId","fmsRefSelector"),appId:read("appId","appSelector"),stageNo:read("stageNo","stageSelector"),rowId:read("rowId","rowSelector"),primaryKey:read("primaryKey","primaryKeySelector"),taskId:read("taskId","taskSelector")});
  const waitForBridgeTicket=(ctx)=>new Promise((resolve,reject)=>{
    const portalOrigin=p.get("portalOrigin");if(!portalOrigin){reject(new Error("Cross-origin app requires portalOrigin in the embed URL."));return}
    const requestId="comments-"+Date.now()+"-"+Math.random().toString(36).slice(2);
@@ -255,20 +270,44 @@ def embed_widget():
    if(!accessToken)throw new Error("No One Portal login token found. Please open this form from a signed-in One Portal session.");
    const response=await fetch(portalBase+"/api/comments/launch-ticket",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+accessToken},body:JSON.stringify(ctx),credentials:"same-origin"});
    let body={};try{body=await response.json()}catch(e){}
-   if(!response.ok||!body.ticket)throw new Error(body.detail||body.message||"One Portal could not issue a Comments launch ticket. Add the comments launch router to One Portal.");
+   if(!response.ok||!body.ticket)throw new Error(body.detail||body.message||"One Portal could not issue a Comments launch ticket. Check the Comments SSO configuration.");
    return body.ticket;
  };
- const postTicket=(ticket,target)=>{const form=document.createElement("form");form.method="POST";form.action=commentsOrigin+"/auth/launch";form.target=target;form.style.display="none";const input=document.createElement("input");input.type="hidden";input.name="ticket";input.value=ticket;form.appendChild(input);document.body.appendChild(form);form.submit();form.remove()};
- const style=document.createElement("style");style.textContent="#task-comments-launcher{position:fixed;right:22px;bottom:22px;z-index:2147483000;border:0;border-radius:999px;background:#2563eb;color:white;width:54px;height:54px;box-shadow:0 8px 24px #0003;font-size:22px;cursor:pointer}#task-comments-overlay{display:none;position:fixed;inset:0;background:#0f172a99;z-index:2147483001;align-items:center;justify-content:center;padding:2vh 2vw}#task-comments-panel{background:white;width:min(1400px,98vw);height:94vh;border-radius:14px;overflow:hidden;display:flex;flex-direction:column}#task-comments-toolbar{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:8px 12px;border-bottom:1px solid #e5e7eb}#task-comments-toolbar button{border:0;border-radius:7px;padding:8px 12px;background:#2563eb;color:white;cursor:pointer}#task-comments-toolbar button.close{background:#475569}#task-comments-status{margin-right:auto;color:#475569;font:13px sans-serif}#task-comments-frame{border:0;width:100%;height:100%;flex:1}";document.head.appendChild(style);
- const btn=document.createElement("button");btn.id="task-comments-launcher";btn.type="button";btn.title="Task comments";btn.setAttribute("aria-label","Open task comments");btn.textContent="💬";document.body.appendChild(btn);
- const overlay=document.createElement("div");overlay.id="task-comments-overlay";overlay.innerHTML='<div id="task-comments-panel"><div id="task-comments-toolbar"><span id="task-comments-status">Ready</span><button id="task-comments-newtab">↗ Open in new tab</button><button class="close" id="task-comments-close">Close ✕</button></div><iframe id="task-comments-frame" name="task-comments-frame" title="Task comments"></iframe></div>';document.body.appendChild(overlay);
+ const postTicket=(ticket,target,view)=>{const form=document.createElement("form");form.method="POST";form.action=commentsOrigin+"/auth/launch";form.target=target;form.style.display="none";[["ticket",ticket],["view",view]].forEach(([name,value])=>{const input=document.createElement("input");input.type="hidden";input.name=name;input.value=value;form.appendChild(input)});document.body.appendChild(form);form.submit();form.remove()};
+ const css=document.createElement("style");css.textContent=`
+ .task-comments-inline-trigger{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:34px;height:30px;padding:0;margin-left:3px;border:1px solid #bfdbfe;border-radius:6px;background:#eff6ff;color:#1d4ed8;cursor:pointer;vertical-align:middle;transition:background .15s,border-color .15s,transform .15s;position:relative}
+ .task-comments-inline-trigger:hover,.task-comments-inline-trigger:focus-visible{background:#dbeafe;border-color:#60a5fa;transform:translateY(-1px);outline:2px solid #93c5fd;outline-offset:1px}
+ .task-comments-inline-trigger svg{width:18px;height:18px;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+ .task-comments-inline-trigger:after{content:'Comments';position:absolute;top:calc(100% + 7px);left:50%;transform:translateX(-50%);opacity:0;pointer-events:none;white-space:nowrap;background:#111827;color:#fff;border-radius:6px;padding:5px 8px;font:600 11px/1.2 sans-serif;z-index:2147483000;transition:opacity .15s}
+ .task-comments-inline-trigger:hover:after,.task-comments-inline-trigger:focus-visible:after{opacity:1}
+ #task-comments-overlay{display:none;position:fixed;inset:0;background:#0f172a99;z-index:2147483001;align-items:center;justify-content:center;padding:2vh 2vw}
+ #task-comments-panel{background:#fff;width:min(1400px,98vw);height:94vh;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 70px #0f172a55}
+ #task-comments-toolbar{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:8px 12px;border-bottom:1px solid #e5e7eb;flex:none}
+ #task-comments-toolbar button{border:0;border-radius:7px;padding:8px 12px;background:#2563eb;color:#fff;cursor:pointer;font:600 13px/1.2 system-ui,sans-serif}
+ #task-comments-toolbar button.close{background:#475569}
+ #task-comments-status{margin-right:auto;color:#475569;font:13px system-ui,sans-serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ #task-comments-frame{border:0;width:100%;height:100%;flex:1;min-height:0;background:#f8fafc}
+ @media(max-width:600px){#task-comments-overlay{padding:0}#task-comments-panel{width:100vw;height:100vh;border-radius:0}#task-comments-toolbar{gap:6px;padding:8px}#task-comments-toolbar button{padding:8px;font-size:12px}}
+ `;document.head.appendChild(css);
+ const overlay=document.createElement("div");overlay.id="task-comments-overlay";overlay.innerHTML='<div id="task-comments-panel" role="dialog" aria-modal="true" aria-label="Task comments"><div id="task-comments-toolbar"><span id="task-comments-status">Ready</span><button id="task-comments-newtab" type="button">↗ Open in new tab</button><button class="close" id="task-comments-close" type="button">Close ✕</button></div><iframe id="task-comments-frame" name="task-comments-frame" title="Task comments"></iframe></div>';document.body.appendChild(overlay);
  const status=(msg)=>{const el=document.getElementById("task-comments-status");if(el)el.textContent=msg};
- btn.addEventListener("click",async()=>{overlay.style.display="flex";status("Connecting to One Portal...");try{const ticket=await requestTicket(context());status("Opening comments...");postTicket(ticket,"task-comments-frame")}catch(e){overlay.style.display="none";alert(e.message||String(e))}});
- document.getElementById("task-comments-newtab").addEventListener("click",async()=>{const win=window.open("about:blank","_blank");if(!win){alert("Allow pop-ups to open Comments in a new tab.");return}const target="comments-tab-"+Date.now();win.name=target;try{const ticket=await requestTicket(context());postTicket(ticket,target)}catch(e){win.close();alert(e.message||String(e))}});
- document.getElementById("task-comments-close").addEventListener("click",()=>{overlay.style.display="none"});overlay.addEventListener("click",e=>{if(e.target===overlay)overlay.style.display="none"});
+ const openCompact=async()=>{overlay.style.display="flex";status("Connecting to One Portal...");try{const ticket=await requestTicket(context());status("Loading conversation...");postTicket(ticket,"task-comments-frame","compact")}catch(e){overlay.style.display="none";alert(e.message||String(e))}};
+ const openFullTab=async()=>{const win=window.open("about:blank","_blank");if(!win){alert("Allow pop-ups to open Comments in a new tab.");return}const target="comments-tab-"+Date.now();win.name=target;try{const ticket=await requestTicket(context());postTicket(ticket,target,"full")}catch(e){win.close();alert(e.message||String(e))}};
+ // Prefer to sit directly beside any stage-specific Lead Time Extension icon.
+ const title=document.querySelector('.stage1-custom .card__title, section.card > h3.card__title, section.card > h3, .card__title');
+ const titleGroup=title&&title.querySelector('div')||title;
+ const ltg=document.querySelector('.lead-time-extension-btn, .s2-lead-time-extension-btn, .s3-lead-time-extension-btn');
+ const btn=document.createElement('button');btn.id='task-comments-trigger';btn.type='button';btn.className='btn btn-sm task-comments-inline-trigger';btn.title='Open comments for this task and stage';btn.setAttribute('aria-label','Open task comments');btn.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 8.7 3.9a8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg>';
+ if(ltg&&ltg.parentElement){ltg.insertAdjacentElement('afterend',btn)}else if(titleGroup){titleGroup.appendChild(btn)}else{document.body.appendChild(btn)}
+ btn.addEventListener('click',openCompact);
+ document.getElementById('task-comments-newtab').addEventListener('click',openFullTab);
+ document.getElementById('task-comments-close').addEventListener('click',()=>{overlay.style.display='none'});
+ overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.style.display='none'});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&overlay.style.display==='flex')overlay.style.display='none'});
 })();
 '''
     return Response(content=js, media_type="application/javascript")
+
 class RpcPayload(BaseModel):
     args: list[Any] = Field(default_factory=list)
 
