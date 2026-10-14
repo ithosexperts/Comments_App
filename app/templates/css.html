@@ -1,4 +1,13 @@
 <style>
+/* Compact view is used only inside the FMS form modal. Keep the authenticated
+   sender/manager DOM values for comment logic, but show only conversation UI. */
+body.comments-compact-view #task-summary { display:none !important; }
+body.comments-compact-view #users-tab-button { display:none !important; }
+body.comments-compact-view #activity-tab-button { border-bottom-color:#2563eb !important; color:#1d4ed8 !important; }
+body.comments-compact-view #logged-in-identity { overflow:hidden; text-overflow:ellipsis; max-width:52vw; }
+body.comments-compact-view #app-container { height:100vh; min-height:0; }
+body.comments-compact-view #conversation-workspace { min-height:0; }
+@media(max-width:640px){body.comments-compact-view #logged-in-identity{font-size:11px;max-width:42vw}body.comments-compact-view #activity-refresh-button{font-size:12px}}
 body { font-family: 'Inter', sans-serif; background: #f8f9fa; color: #111827; }
 #comment-container::-webkit-scrollbar { width: 6px; }
 #comment-container::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
