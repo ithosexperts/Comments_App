@@ -15,7 +15,7 @@
 {% include 'rpc-bridge.html' %}
 
 </head>
-<body class="text-gray-800">
+<body class="text-gray-800{% if compact_view %} comments-compact-view{% endif %}">
 
 {% include 'modals.html' %}
 {% include 'main-ui.html' %}
