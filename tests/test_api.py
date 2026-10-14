@@ -369,3 +369,63 @@ def test_application_name_falls_back_to_application_master_by_app_id():
     assert response.status_code == 200, response.text[:500]
     assert '<h1 class="text-xl md:text-2xl font-bold text-gray-900 truncate">Pack to Dispatch Details</h1>' in response.text
     assert 'Z_SalesOrder</h1>' not in response.text
+
+
+def test_form_context_resolves_mapped_ref_from_physical_row_primary_key():
+    from app.services import ActivityService
+    from app.sql_api import MemorySqlGateway
+    from app.config import settings
+
+    gateway = MemorySqlGateway({
+        settings.stage_map_table: [{
+            "TableName": "Z_SalesOrder", "FMS Ref Id": "Pick ID",
+            "App ID": "APP000001", "Stage No": "S4",
+        }],
+        "Z_SalesOrder": [{
+            "RowID": "123", "Pick ID": "PICK-008", "Task ID": "TASK-9",
+            "Stage Name": "Invoice", "Application Name": "Sales Order Application",
+        }],
+    })
+    service = ActivityService(gateway, settings)
+    resolved = service.get_form_context(
+        "Z_SalesOrder", "123", "APP000001", "S4",
+        row_id="123", primary_key="RowID", task_id="TASK-9",
+    )
+    assert resolved["fmsRefId"] == "PICK-008"
+    assert resolved["taskId"] == "TASK-9"
+    assert resolved["commentId"] == service.context_comment_id("Z_SalesOrder", "PICK-008", "APP000001", "S4")
+
+
+def test_compact_view_hides_task_summary_and_shows_verified_role_id(monkeypatch):
+    from app import main
+    client = setup_client()
+    monkeypatch.setattr(main, "get_current_identity", lambda request: {
+        "email": "verified@example.com", "full_name": "Verified User",
+        "employee_code": "EMP-7", "role_id": "7", "role_name": "Manager",
+    })
+    page = client.get("/?view=compact")
+    assert page.status_code == 200
+    assert 'comments-compact-view' in page.text
+    assert 'Role ID: 7' in page.text
+    assert 'Verified User' in page.text
+    assert 'logged-in-identity' in page.text
+
+
+def test_form_context_accepts_s_prefixed_stage_when_mapping_stores_number():
+    from app.services import ActivityService
+    from app.sql_api import MemorySqlGateway
+    from app.config import settings
+
+    gateway = MemorySqlGateway({
+        settings.stage_map_table: [{
+            "TableName": "Z_SalesOrder", "FMS Ref Id": "RowID",
+            "App ID": "APP000001", "Stage No": "4",
+        }],
+        "Z_SalesOrder": [{
+            "RowID": "123", "Task ID": "TASK-9", "Stage Name": "Invoice",
+        }],
+    })
+    service = ActivityService(gateway, settings)
+    resolved = service.get_form_context("Z_SalesOrder", "123", "APP000001", "S4")
+    assert resolved["stageNo"] == "4"
+    assert resolved["commentId"] == service.context_comment_id("Z_SalesOrder", "123", "APP000001", "4")
