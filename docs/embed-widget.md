@@ -1,6 +1,8 @@
 # Embed the Task Comments launcher in an FMS form
 
-The launcher displays a floating comments icon. Clicking it requests a signed task launch ticket from the logged-in One Portal session, opens Comments in a modal, and offers an **Open in new tab** action.
+The launcher adds an inline Comments icon beside an existing Lead Time Extension icon. If that stage has no Lead Time Extension control, it places the Comments icon in the stage heading. Clicking it opens a compact modal showing the conversation and comment/reply controls. The modal provides **Open in new tab**, which opens the same context with the complete task information.
+
+The launcher asks the logged-in One Portal backend for a short-lived signed ticket. It does not accept a sender name, email or role from the URL. The Comments app resolves the employee from the verified ticket and shows the signed-in employee name and Role ID.
 
 ## Static context example
 
@@ -8,16 +10,10 @@ The launcher displays a floating comments icon. Clicking it requests a signed ta
 <script defer src="https://YOUR-COMMENTS-HOST/embed.js?tableName=Z_SalesOrder&fmsRefId=8&appId=APP000001&stageNo=1"></script>
 ```
 
-`fmsRefId=8` is the current row value, not the source column name. The mapping table's `FMSRefId` value should contain the column name, e.g. `Pick ID`.
+`fmsRefId=8` is the current value of the configured reference column, not its column name. The mapping table's `FMSRefId` value should contain that column name, for example `Pick ID`.
 
-## Read values dynamically from the form
+## FMS Portal context
 
-Use selectors matching the actual form's input IDs/names. The selected element's `.value`, text, or `data-value` is read at click time:
+The FMS Portal integration passes `tableName`, `fmsRefId`, `rowId`, `primaryKey`, `taskId`, `appId`, and `stageNo`. If the physical row primary key and mapped reference value are different, Comments first resolves the physical row by `primaryKey` + `rowId`, then uses the mapped `FMSRefId` column value as the canonical conversation key. This ensures separate applications and stages do not share a conversation by accident.
 
-```html
-<script defer src="https://YOUR-COMMENTS-HOST/embed.js?tableSelector=%23table-name&fmsRefSelector=%23pick-id&appSelector=%23app-id&stageSelector=%23stage-no&portalOrigin=https%3A%2F%2Fportal.example.com"></script>
-```
-
-Replace all sample hosts/selectors with real values. For a cross-origin iframe, include the trusted One Portal origin and install the bridge as documented in `portal-identity-handoff.md`.
-
-The comments app receives `TableName`, reference value, `AppID`, and `StageNo` from the signed task context. It generates its stable internal `CTX-...` CommentID. Do not pass an email or CommentID as a security credential.
+For an iframe opened from One Portal, `portalOrigin` must be set to the exact One Portal origin and the FMS origin must be in `COMMENTS_BRIDGE_ALLOWED_ORIGINS`. Configure the same `COMMENTS_LAUNCH_SECRET` (at least 32 characters) in One Portal and Comments App, and set the Comments app's URL/SSO settings in One Portal's Application Master as described in `docs/portal-identity-handoff.md`.
