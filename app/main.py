@@ -256,15 +256,32 @@ def embed_widget():
  const read=(param,selectorParam)=>{const selector=p.get(selectorParam);if(selector){const el=document.querySelector(selector);if(el)return String(el.value||el.textContent||el.getAttribute("data-value")||"").trim()}return p.get(param)||""};
  const context=()=>({tableName:read("tableName","tableSelector"),fmsRefId:read("fmsRefId","fmsRefSelector"),appId:read("appId","appSelector"),stageNo:read("stageNo","stageSelector"),rowId:read("rowId","rowSelector"),primaryKey:read("primaryKey","primaryKeySelector"),taskId:read("taskId","taskSelector")});
  const waitForBridgeTicket=(ctx)=>new Promise((resolve,reject)=>{
-   const portalOrigin=p.get("portalOrigin");if(!portalOrigin){reject(new Error("Cross-origin app requires portalOrigin in the embed URL."));return}
+   const portalOrigin=p.get("portalOrigin");
+   if(!portalOrigin){reject(new Error("Cross-origin app requires portalOrigin in the embed URL."));return}
+   // The stage form is nested inside the FMS dashboard iframe, which is itself
+   // embedded by One Portal. window.parent is therefore FMS, not One Portal.
+   // postMessage can safely target the top-level One Portal window by exact origin.
+   const portalWindow=window.top;
    const requestId="comments-"+Date.now()+"-"+Math.random().toString(36).slice(2);
-   const timer=setTimeout(()=>{window.removeEventListener("message",listener);reject(new Error("No response from One Portal identity bridge."))},12000);
-   const listener=(event)=>{if(event.source!==window.parent||event.origin!==portalOrigin||!event.data||event.data.type!=="ONEPORTAL_COMMENTS_LAUNCH_TICKET"||event.data.requestId!==requestId)return;clearTimeout(timer);window.removeEventListener("message",listener);if(event.data.error)reject(new Error(event.data.error));else if(event.data.ticket)resolve(event.data.ticket);else reject(new Error("One Portal did not return a launch ticket."))};
-   window.addEventListener("message",listener);window.parent.postMessage({type:"ONEPORTAL_COMMENTS_LAUNCH_REQUEST",requestId,context:ctx},portalOrigin);
+   let timer;
+   const cleanup=()=>{if(timer)clearTimeout(timer);window.removeEventListener("message",listener)};
+   const listener=(event)=>{
+     if(event.source!==portalWindow||event.origin!==portalOrigin||!event.data||event.data.type!=="ONEPORTAL_COMMENTS_LAUNCH_TICKET"||event.data.requestId!==requestId)return;
+     cleanup();
+     if(event.data.error)reject(new Error(event.data.error));
+     else if(event.data.ticket)resolve(event.data.ticket);
+     else reject(new Error("One Portal did not return a launch ticket."));
+   };
+   window.addEventListener("message",listener);
+   timer=setTimeout(()=>{cleanup();reject(new Error("No response from One Portal identity bridge. Confirm the updated One Portal bridge and FMS embed script are deployed."))},12000);
+   portalWindow.postMessage({type:"ONEPORTAL_COMMENTS_LAUNCH_REQUEST",requestId,context:ctx},portalOrigin);
  });
  const requestTicket=async(ctx)=>{
    if(!ctx.tableName||!ctx.fmsRefId||!ctx.appId||!ctx.stageNo)throw new Error("Comments launcher needs Table Name, FMS Ref Id/value, App ID and Stage No.");
-   if(window.parent!==window&&p.get("portalOrigin"))return await waitForBridgeTicket(ctx);
+   if(window.top!==window.self){
+     if(!p.get("portalOrigin"))throw new Error("Comments is embedded but portalOrigin is missing from the embed URL.");
+     return await waitForBridgeTicket(ctx);
+   }
    const portalBase=(p.get("portalApiBase")||window.location.origin).replace(/\/$/,"");
    let accessToken="";try{accessToken=localStorage.getItem("access_token")||localStorage.getItem("auth_token")||""}catch(e){}
    if(!accessToken)throw new Error("No One Portal login token found. Please open this form from a signed-in One Portal session.");
@@ -306,7 +323,17 @@ def embed_widget():
  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&overlay.style.display==='flex')overlay.style.display='none'});
 })();
 '''
-    return Response(content=js, media_type="application/javascript")
+    # This launcher contains the live bridge logic; prevent browser/CDN caches from
+    # keeping an older parent-window implementation after deployment.
+    return Response(
+        content=js,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 class RpcPayload(BaseModel):
     args: list[Any] = Field(default_factory=list)
