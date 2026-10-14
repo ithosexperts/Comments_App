@@ -61,6 +61,7 @@
         <button id="activity-tab-button" role="tab" aria-selected="true" onclick="showRightPanelTab('activity')" class="px-3 py-2 border-b-2 border-blue-600 text-blue-700 font-semibold text-sm">Activity &amp; Comments</button>
         <button id="users-tab-button" role="tab" aria-selected="false" onclick="showRightPanelTab('users')" class="px-3 py-2 border-b-2 border-transparent text-gray-500 hover:text-blue-700 font-semibold text-sm">User</button>
       </div>
+      <div id="logged-in-identity" class="ml-auto mr-2 text-xs md:text-sm font-semibold text-gray-600 whitespace-nowrap" title="Verified One Portal identity"><i class="fas fa-user-check mr-1 text-green-600"></i>{{ current_user_name or current_user_email }} <span class="font-normal text-gray-400">·</span> Role ID: {{ current_user_role_id or "—" }}</div>
       <button id="activity-refresh-button" onclick="loadComments()" class="text-blue-600 hover:text-blue-800 text-sm font-medium whitespace-nowrap"><i class="fas fa-sync-alt mr-1"></i> Refresh</button>
     </div>
 
