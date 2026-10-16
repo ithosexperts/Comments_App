@@ -169,7 +169,9 @@ function renderMultiUserContent() {
             </div>
         `;
     } else {
-        return composerState.recipients.map((r, idx) => `
+        return `
+          <div class="recipient-different-list">
+            ${composerState.recipients.map((r, idx) => `
             <div class="mini-composer-card">
                 <div class="flex justify-between items-center mb-1">
                     <span class="font-bold text-sm text-gray-700">@${r.name}</span>
@@ -180,7 +182,9 @@ function renderMultiUserContent() {
                  </div>
                 <textarea oninput="setUserText(${idx}, this.value)" placeholder="Custom message for ${r.name.split(' ')[0]}..." class="mini-input" rows="1">${r.customText || ''}</textarea>
             </div>
-        `).join('');
+            `).join('')}
+          </div>
+        `;
     }
 }
 
