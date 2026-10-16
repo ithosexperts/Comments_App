@@ -89,17 +89,8 @@
       </div>
       <div id="users-count" class="flex-none px-4 py-3 border-t border-gray-100 text-xs text-gray-500">0 employees</div>
     </section>
-
     <!-- Composer stays at the bottom; chat history scrolls above it. -->
     <div id="composer-area" class="flex-none flex flex-col p-3 md:p-4 bg-white composer-background shadow-inner relative z-20 border-t border-gray-200 min-h-0" style="height: min(310px, 38vh); min-height: 220px;">
-      <div id="new-thread-overlay"
-           onclick="activateComposer()"
-           class="absolute inset-0 z-50 bg-gray-50/95 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100/95 transition-colors backdrop-blur-sm">
-        <div class="p-4 rounded-full bg-white shadow-lg mb-3 transform transition-transform hover:scale-110 border border-gray-100">
-          <i class="fas fa-pen-fancy text-blue-600 text-3xl"></i>
-        </div>
-        <span class="font-bold text-gray-700 text-lg tracking-wide">Click to Start New Thread</span>
-      </div>
 
       <div class="relative flex-1 flex flex-col min-h-0">
         <div id="main-mention-dropdown" class="mention-dropdown hidden"></div>
@@ -144,10 +135,3 @@
   </main>
 </div>
 
-<script>
-function activateComposer() {
-    const overlay = document.getElementById('new-thread-overlay');
-    if (!overlay) return;
-    overlay.style.display = "none";
-}
-</script>
