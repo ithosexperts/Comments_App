@@ -73,4 +73,20 @@ body { font-family: 'Inter', sans-serif; background: #f8f9fa; color: #111827; }
 .rich-text ul { list-style-type: disc !important; padding-left: 1.5rem !important; margin: 0.5rem 0 !important; }
 .rich-text ol { list-style-type: decimal !important; padding-left: 1.5rem !important; margin: 0.5rem 0 !important; }
 .rich-text li { display: list-item !important; }
+
+/* Keep per-recipient controls reachable when Different mode has many recipients. */
+.recipient-different-list {
+  max-height: 132px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
+.recipient-different-list::-webkit-scrollbar { width: 8px; }
+.recipient-different-list::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 8px; }
+.recipient-different-list::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 8px; }
+.recipient-different-list::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
 </style>
